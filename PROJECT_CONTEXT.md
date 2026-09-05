@@ -3,7 +3,10 @@
 ## Current Objective
 Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.md Section 18), sequenced: 🔴 Core workflow fully working first, then 🟡 Supporting, then 🟢 Bonus only if ahead of schedule. Database and business-logic correctness are being treated as first-class judging criteria, not implementation afterthoughts.
 
-**Where we are right now:** Phase 1 (Foundation) is complete and validated. Phase 2 (Core Data Model) is next, but is blocked on locking the blended risk score formula — see Known Issues.
+**Where we are right now:** Phase 1 (Foundation) is complete and validated. The blended risk
+score, the single-line Finance gate, the approval routing thresholds and the proration rule
+are all locked (see "Locked Business Rules" below), so **Phase 2 (Core Data Model) is
+unblocked and is the next task.**
 
 ## Product Understanding
 DealFlow360 is a self-governing B2B sales operations platform — a full quote-to-cash system, not a simple quote-to-invoice tool. Core value: automatic discount discipline (blended risk scoring), real-time multi-warehouse inventory awareness, reconciled one-time + recurring billing on a single order, and a live customer negotiation portal.
@@ -78,12 +81,153 @@ docs/                 ERD + architecture diagram — Phase 2 deliverable.
 
 **ERD status:** _(not yet created — required deliverable of Phase 2, kept current as schema evolves)_
 
+## Locked Business Rules
+
+These were ambiguous in the PRD and were explicitly confirmed by the user on 2026-09-05
+(PLAN.md Section 0.6). **They are locked. Do not redefine them in a later session** — if
+they need to change, change them here first and record it in IMPLEMENTATION_LOG.md.
+
+### 1. Blended Discount Risk Score — LOCKED
+
+Per quotation line `i`:
+
+```
+ceiling_i         = max allowed discount %, from discount_tiers,
+                    keyed by (customer_tier x product_category)
+given_i           = discount % actually applied to the line
+line_excess_i     = max(0, given_i - ceiling_i)       # in percentage POINTS
+line_value_i      = unit_list_price_i x quantity_i    # PRE-discount list value
+```
+
+```
+                     SUM( line_excess_i x line_value_i )
+BLENDED_RISK_SCORE = ------------------------------------
+                          total_order_value
+```
+
+where `total_order_value = SUM(line_value_i)`.
+
+Units: percentage points. Read it as **"the value-weighted average number of points of
+discount given beyond policy, across the order."**
+
+It is algebraically identical to:
+
+```
+                     total currency discounted beyond policy
+BLENDED_RISK_SCORE = --------------------------------------- x 100
+                            total order list value
+```
+
+Both readings are worth knowing for the viva — the first explains *why* it is called
+blended, the second explains *what it costs the company*.
+
+**Worked check against the PRD's own example (PRD Section 10):**
+
+| Line | List value | Given | Ceiling | Excess |
+|---|---|---|---|---|
+| Laptop (Hardware) | 100,000 | 12% | 15% | 0 |
+| Setup Service (Service) | 20,000 | 18% | 10% | 8 |
+
+`score = (0 x 100000 + 8 x 20000) / 120000 = 1.33` → greater than 0 → routed to Sales
+Manager. The PRD requires this quote to be flagged, and it is.
+
+**Worked check against the PRD's "many small violations" case:** three lines of equal
+value, 2 / 3 / 2 points over → `score = 2.33` → routed to Sales Manager. No single line
+looks alarming, but the order is still caught.
+
+**Useful property:** every `line_value_i` is positive, so `score > 0` if and only if at
+least one line exceeds its own ceiling. "Any line over its ceiling must be flagged" is
+therefore not a separate gate bolted onto the formula — it falls out of the formula. Do
+not write a redundant second check for *whether approval is required*. (This is distinct
+from the single-line Finance gate in #2, which is a genuine additional rule.)
+
+**Implementation notes:**
+- Compute with `Decimal`, never `float`. Store as `NUMERIC` in Postgres.
+- Persist the score on the quotation **and** the per-line excess breakdown, so an approver
+  can see *why* a quote scored what it did rather than just seeing a number.
+- Recompute on every line change and on every customer-portal counter-offer — a
+  counter-offer that pushes the score into a higher band must re-enter approval
+  automatically (PRD B8).
+
+### 2. Approval Routing — LOCKED (as configurable data, not constants)
+
+Two things decide routing: the blended score band, and a single-line escalation gate.
+
+**(a) Single-line Finance gate — overrides the score band.**
+
+```
+if max(line_excess_i) > 15:   ->  Manager + Finance, regardless of blended_score
+```
+
+Any one line more than 15 points over its own limit forces Finance escalation even when
+the blended score is low. This is what stops a severely-discounted small line from being
+diluted into insignificance by a large, well-behaved order — the exact blind spot a
+value-weighted average has.
+
+**(b) Score bands — live in an `approval_chains` table**, seeded with the values below and
+editable by an Admin at runtime. This is deliberate: PRD section A3 ("Configure approval
+chain") explicitly asks for it, it is how real ERP systems handle policy that changes over
+time, and it strengthens both the data-model judging criterion and the viva answer.
+**Do not reintroduce these numbers as constants in application code.**
+
+| Score band | Required approvals |
+|---|---|
+| `score = 0` | None — straight to fulfillment |
+| `0 < score < 25` | Sales Manager |
+| `score >= 25` | Sales Manager (step 1), then Finance (step 2) |
+
+**Resolution order:**
+
+```
+if score == 0:                      no approval
+elif max(line_excess_i) > 15:       Manager -> Finance     # gate (a) wins
+elif score >= 25:                   Manager -> Finance
+else:                               Manager
+```
+
+> **Note on demo-ability.** A blended score of 25 is a very large breach — roughly a 40%
+> discount order-wide against a 15% ceiling — so band (b) alone would almost never fire,
+> and PLAN.md Section 16 Flow 1 wants the two-step chain shown live. The single-line gate
+> in (a) fixes this: one line at, say, 35% against a 15% ceiling is 20 points over, which
+> escalates to Finance on its own. Use that as the demo path. Both numbers remain easy to
+> retune — the band is seed data, and the gate is a single named constant.
+
+### 3. Subscription Proration — LOCKED
+
+Daily basis on exact remaining days, rounded **half-up to 2 decimal places**.
+
+```
+cycle_days     = cycle_end - cycle_start
+remaining_days = cycle_end - change_date
+
+credit    = old_amount x (remaining_days / cycle_days)
+charge    = new_amount x (remaining_days / cycle_days)
+proration = ROUND_HALF_UP(charge - credit, 2)
+```
+
+Worked example — 1200/month upgraded to 1800/month on day 10 of a 30-day cycle:
+
+```
+remaining = 20/30
+credit    = 1200 x 0.666... =  800.04
+charge    = 1800 x 0.666... = 1200.06
+proration =                     400.02
+```
+
+**Implementation notes:**
+- Use `decimal.Decimal` with an explicit `ROUND_HALF_UP` quantize. Python's built-in
+  `round()` is banker's rounding and produces different results — do not use it.
+- Store `cycle_start`, `cycle_end`, `change_date`, `old_amount`, `new_amount` and the
+  computed `proration` in `proration_records`. Storing only the result makes a billing
+  dispute unanswerable.
+- A downgrade yields a negative proration, which becomes the credit note PRD B7 requires.
+
 ## Core Workflows
 1. Rep builds quotation → adds lines → applies discounts
-2. Blended risk score computed live across all lines (**exact formula not yet locked — see Known Issues**)
-3. Threshold exceeded → auto-routes to Manager (and Finance if higher threshold)
+2. Blended risk score computed live across all lines (**formula locked — see Locked Business Rules #1**)
+3. Threshold exceeded → auto-routes to Manager (and Finance on the score band or the single-line gate — see Locked Business Rules #2)
 4. Approved → stock deducted/split across warehouses; backorder created if insufficient
-5. Subscription lines get billing schedule + proration on mid-cycle change (**rounding rule not yet locked — see Known Issues**)
+5. Subscription lines get billing schedule + proration on mid-cycle change (**rule locked — see Locked Business Rules #3**)
 6. Customer negotiates via portal → counter-offer may re-trigger step 3 automatically
 7. Deal health dashboard surfaces stalled/anomalous deals from the above activity
 
@@ -160,11 +304,18 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
 
 ## Known Issues
 
-**Blocking questions — must be answered before the dependent phase begins (PLAN.md Section 0.6):**
-- **Blended risk score exact formula not yet locked** — blocks Phase 3 step 3, and partly shapes Phase 2 (which computed fields the `quotations` table stores). The PRD (Section 10) explains the *intent* — per-line limits by customer tier × product category, and an aggregate that catches many small violations — but never gives the arithmetic or the Manager/Finance cut-offs.
-- **Proration rounding rule not yet locked** — blocks Phase 3 step 6.
+**Resolved 2026-09-05** — blended risk score formula, the single-line Finance gate,
+approval routing thresholds, and proration basis/rounding are all confirmed and written up
+under "Locked Business Rules" above. **Phase 2 is no longer blocked.**
+
+**Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.
-- **Warehouse selection tie-breaking rule not yet defined** — blocks Phase 3 step 5.
+  Specifically: how many days of inactivity makes a quote "stalled", and how far above a
+  rep's own historical average a discount must sit to count as an anomaly. Neither affects
+  the Phase 2 schema (both are configuration rows), so this can wait.
+- **Warehouse selection tie-breaking rule not yet defined** — blocks Phase 3 step 5. When
+  two warehouses can equally satisfy a line: lowest shipping-cost weight, then highest
+  remaining stock, then lowest warehouse id? Does not affect the schema either.
 
 **Missing source documents:**
 - `DealFlow360_PRD_Merged.md` is named by PLAN.md as authoritative for feature scope, but is not present in the repository. `DealFlow360.pdf` was supplied in conversation and is the original source; it has not been committed. Ask the user to add both to `docs/`.
@@ -189,7 +340,14 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
 Mirrors PLAN.md Section 18. Nothing in the 🔴 Core / 🟡 Supporting / 🟢 Bonus feature set is implemented yet — Phase 1 delivered scaffolding only. Next: Phase 2 (Core Data Model).
 
 ## Do Not Change / Do Not Break
-- Blended risk score formula, once locked — do not let a later session silently redefine it
+- **Blended risk score formula — now locked.** See Locked Business Rules #1. Do not let a
+  later session silently redefine it, and do not add a redundant "any line over ceiling"
+  check to decide *whether* approval is needed — that already falls out of the formula
+- **The single-line Finance gate (`max(line_excess) > 15`) is a real, separate rule.** It
+  overrides the score band and must not be folded into the blended score
+- **Approval score bands live in `approval_chains` rows, not in code.** Do not hardcode them
+- **Proration uses `Decimal` + explicit `ROUND_HALF_UP`.** Never `float`, never Python's
+  built-in `round()`, which is banker's rounding and gives different answers
 - Server-side role + resource-ownership enforcement — never move checks to frontend-only
 - State machine transition rules — do not allow invalid transitions to pass silently
 - `POSTGRES_PASSWORD` / `JWT_SECRET_KEY` must stay required settings with no in-code default

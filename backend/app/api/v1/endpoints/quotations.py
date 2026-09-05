@@ -25,6 +25,7 @@ from app.models.customer import Customer
 from app.models.enums import ItemType, QuotationStatus, RoleCode
 from app.models.quotation import Quotation, QuotationLine
 from app.models.rbac import User
+from app.models.upsell import UpsellRule
 from app.schemas.api import (
     CreateQuotationRequest,
     OrderDiscountRequest,
@@ -34,11 +35,24 @@ from app.schemas.api import (
     ReplaceLinesRequest,
     RiskLineBreakdown,
     RiskPreviewResponse,
+    UpsellSuggestionResponse,
 )
 from app.services import audit
 from app.services.approval import raise_approval_request, risk_band
-from app.services.quotation import confirm, load_quotation, next_quote_number, recalculate
+from app.services.quotation import (
+    confirm,
+    load_quotation,
+    next_quote_number,
+    quantize_percent,
+    recalculate,
+)
 from app.services.state_machine import InvalidStateTransition, assert_transition
+from app.services.upsell import (
+    UpsellCandidate,
+    margin_delta_if_added,
+    product_margin_percent,
+    rank_suggestions,
+)
 
 router = APIRouter(prefix="/quotations", tags=["quotations"])
 
@@ -116,7 +130,7 @@ async def list_quotations(
     `portal.*` permissions. That is deliberate — FRONTEND.md Section 2.2
     requires the portal to be a genuinely separate restricted view, not the
     internal list with rows filtered out. The portal's own "My Quotations"
-    endpoint is Phase 3 step 7, and is not built yet.
+    list is `GET /portal/quotations`.
     """
     statement = (
         select(Quotation)
@@ -274,7 +288,7 @@ async def replace_lines(
                 unit_list_price=product.list_price,
                 unit_cost_price=product.cost_price,
                 tax_rate=product.tax_rate,
-                discount_percent=item.discount_percent,
+                discount_percent=quantize_percent(item.discount_percent),
                 line_type=product.item_type,
                 subscription_plan_id=item.subscription_plan_id
                 if product.item_type == ItemType.SUBSCRIPTION
@@ -320,8 +334,9 @@ async def apply_order_discount(
         raise _NOT_FOUND
     await assert_can_edit_quotation(request, session, user, quotation)
 
+    order_discount = quantize_percent(payload.discount_percent)
     for line in quotation.lines:
-        line.discount_percent = payload.discount_percent
+        line.discount_percent = order_discount
     await session.flush()
     await recalculate(session, quotation)
 
@@ -370,6 +385,90 @@ async def get_risk(
         ],
         required_steps=[step.role_code for step in steps],
     )
+
+
+@router.get("/{quotation_id}/upsell", response_model=list[UpsellSuggestionResponse])
+async def get_upsell_suggestions(
+    request: Request, quotation_id: int, session: SessionDep, user: CurrentUser
+) -> list[UpsellSuggestionResponse]:
+    """PRD B5's Upsell & Cross-Sell panel: ranked suggestions for the products
+    already on this quote, with each one's live margin impact if added.
+
+    Seeded `upsell_rules` map a trigger product to a suggested one
+    (`app/models/upsell.py`). A product already on the quote, or with no rule
+    at all, is never suggested — there is no fallback to "just show something"
+    the way the old promoted-products stand-in did.
+    """
+    quotation = await load_quotation(session, quotation_id)
+    if quotation is None:
+        raise _NOT_FOUND
+    await assert_can_view_quotation(request, session, user, quotation)
+
+    on_quote_ids = {line.product_id for line in quotation.lines}
+    if not on_quote_ids:
+        return []
+
+    rows = (
+        await session.execute(
+            select(UpsellRule, Product)
+            .join(Product, Product.id == UpsellRule.suggested_product_id)
+            .where(
+                UpsellRule.trigger_product_id.in_(on_quote_ids),
+                UpsellRule.suggested_product_id.notin_(on_quote_ids),
+                UpsellRule.is_active.is_(True),
+                Product.is_active.is_(True),
+            )
+        )
+    ).all()
+
+    # A product can be suggested by more than one line already on the quote
+    # (two triggers both pointing at the same accessory) - keep only the
+    # highest-scoring rule per suggested product rather than showing it twice.
+    best_rule: dict[int, UpsellRule] = {}
+    product_by_id: dict[int, Product] = {}
+    for rule, product in rows:
+        product_by_id[product.id] = product
+        current = best_rule.get(product.id)
+        if current is None or rule.co_purchase_score > current.co_purchase_score:
+            best_rule[product.id] = rule
+
+    current_net_revenue = quotation.subtotal_amount - quotation.discount_amount
+    current_margin_amount = quotation.margin_amount
+
+    candidates = []
+    for product_id, rule in best_rule.items():
+        product = product_by_id[product_id]
+        delta = margin_delta_if_added(
+            current_net_revenue=current_net_revenue,
+            current_margin_amount=current_margin_amount,
+            added_list_price=product.list_price,
+            added_cost_price=product.cost_price,
+        )
+        candidates.append(
+            UpsellCandidate(
+                suggested_product_id=product_id,
+                is_promoted=product.is_promoted,
+                co_purchase_score=rule.co_purchase_score,
+                min_margin_percent=rule.min_margin_percent,
+                product_margin_percent=product_margin_percent(
+                    product.list_price, product.cost_price
+                ),
+                margin_delta_percent=delta,
+            )
+        )
+
+    ranked = rank_suggestions(candidates)
+    return [
+        UpsellSuggestionResponse(
+            product_id=c.suggested_product_id,
+            product_name=product_by_id[c.suggested_product_id].name,
+            product_sku=product_by_id[c.suggested_product_id].sku,
+            list_price=product_by_id[c.suggested_product_id].list_price,
+            is_promoted=c.is_promoted,
+            margin_delta_percent=c.margin_delta_percent,
+        )
+        for c in ranked
+    ]
 
 
 @router.post("/{quotation_id}/submit", response_model=QuotationResponse)

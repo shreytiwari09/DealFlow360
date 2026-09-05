@@ -4,22 +4,22 @@
 Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.md Section 18), sequenced: 🔴 Core workflow fully working first, then 🟡 Supporting, then 🟢 Bonus only if ahead of schedule. Database and business-logic correctness are being treated as first-class judging criteria, not implementation afterthoughts.
 
 **Where we are right now:** Phases 1, 2 and 3 are all complete, plus a Phase 8 frontend slice
-brought forward at the user's request. **All PRD Core (🔴) scope is done.** There is a working,
-demoable application — see `DEMO.md`, the verified script to run in front of an interviewer,
-which covers the approval flows and lists exactly what is and is not built (it does not yet
-cover fulfillment, billing or the portal — see its own note).
+brought forward at the user's request, plus the first 🟡 Supporting item (upsell). **All PRD
+Core (🔴) scope is done.** There is a working, demoable application — see `DEMO.md`, the
+verified script to run in front of an interviewer, now covering fulfillment, billing and
+portal negotiation as well as the two original approval flows.
 
-Working end to end: login for all five roles, quotation builder with a live blended risk score
-and a subscription-plan picker for hybrid lines, automatic approval routing (including the
-sequential two-step Manager→Finance chain), approve / reject / return-for-revision with a
-mandatory reason, a full audit trail, multi-warehouse fulfillment with backorders, hybrid
-billing with daily-basis mid-cycle proration, and a genuinely separate customer portal where a
-counter-offer that breaches policy automatically re-enters approval. Screens 1-13 of
-`FRONTEND.md` are built.
+Working end to end: login for all five roles, quotation builder with a live blended risk score,
+order-level and per-line discounts, a subscription-plan picker for hybrid lines, and a real
+Upsell & Cross-Sell panel; automatic approval routing (including the sequential two-step
+Manager→Finance chain); approve / reject / return-for-revision with a mandatory reason; a full
+audit trail; multi-warehouse fulfillment with backorders; hybrid billing with daily-basis
+mid-cycle proration; and a genuinely separate customer portal where a counter-offer that
+breaches policy automatically re-enters approval. Screens 1-13 of `FRONTEND.md` are built.
 
-**Next:** everything remaining is 🟡 Supporting scope — the upsell panel wired to real data,
-then the deal health dashboard, reporting, and admin config screens. See "Remaining Work" for
-the ordered backlog.
+**Next:** everything remaining is 🟡 Supporting scope — the deal health dashboard (blocked on
+undefined thresholds), reporting, and admin config screens. See "Remaining Work" for the
+ordered backlog.
 
 **Source-of-truth documents:** `PLAN.md` (process and order), `PROJECT_CONTEXT.md` (this file),
 `IMPLEMENTATION_LOG.md` (history), `SECURITY_SPEC.md` (security contract), `FRONTEND.md`
@@ -670,14 +670,24 @@ Rules #8 for the four business-logic decisions this required and the one real ga
 (`approved` being negotiable at all) found via the live-API script rather than designed for
 up front.
 
-**Known, deliberately unfixed this round — a display-precision cosmetic, same class as the
-one fixed in `services/billing.py`.** A `Decimal` value set directly from a JSON request body
-(e.g. `20`) prints without the trailing zeros a DB-round-tripped value of the same column
-shows (`20.00`) until the row is next read back from Postgres. Fixed for the portal's counter
-discount (`services/portal.py`'s `_percent()`) because this session touched that exact code
-path; the same class of gap likely still exists on the internal order-level discount endpoint
-(`apply_order_discount` in `quotations.py`) and possibly elsewhere. Purely cosmetic — the
-stored value is always correct — but worth a dedicated sweep rather than a rule-by-rule fix.
+**Resolved 2026-09-06 — the display-precision cosmetic swept project-wide.** The gap noted in
+the previous entry (a `Decimal` set directly from a JSON body prints without trailing zeros
+until the row round-trips through Postgres) is now fixed at all three known occurrences:
+`services/portal.py`'s counter discount, `services/billing.py`'s subscription quantity, and
+`services/quotation.py`'s new `quantize_percent()`, used by both `replace_lines` and
+`apply_order_discount`. A repo-wide grep for `Numeric(` columns fed directly from a request
+body found no further instances.
+
+**Resolved 2026-09-06 — Order-level discount UI built, and the Upsell panel wired to real
+`upsell_rules` data.** The builder now has an "Order-level discount" control (with the
+overwrite-warning `Locked Business Rules #4 requires`), and the Upsell & Cross-Sell panel
+calls `GET /quotations/{id}/upsell` instead of showing promoted products as a stand-in. See
+`app/services/upsell.py` for the ranking/margin-floor logic and its one documented judgment
+call: `min_margin_percent` is read as a floor on the **suggested product's own margin**, not
+on the order-wide margin delta the class docstring's third ranking bullet literally names —
+the seeded values (10-20) only make sense as plausible product-margin percentages, not as
+swings in a blended margin, which are normally a few points at most. Not raised as a
+clarifying question: low-stakes, reversible, and documented here rather than blocking on it.
 
 **Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.
@@ -754,6 +764,11 @@ stored value is always correct — but worth a dedicated sweep rather than a rul
   with the automatic re-approval loop — including `terms_already_approved()`, the rule that
   keeps an already-approved quotation from bouncing back to the same approver forever. See
   Locked Business Rules #8.
+- **Upsell / cross-sell panel wired to real data** (PRD A6, B5) — `app/services/upsell.py`
+  ranks seeded `upsell_rules` by promotion then co-purchase score, suppresses anything below its
+  own margin floor, and computes the live margin-delta figure the panel displays by simulating
+  the exact line `addProduct()` would create. Builder also gained the Order-Level Discount
+  control (Locked Business Rules #4) that had been deferred since Phase 3 began.
 
 **Phase 8 (Frontend): Screens 1-13 built.** Screens 1-6 brought forward at the user's request
 once `FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment), 9-10/12-13
@@ -761,15 +776,14 @@ once `FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment), 9-10/12
 immediately once their respective backends existed. Screens 14-18 appear in the internal
 sidebar explicitly disabled rather than as links to empty pages.
 
-**Verified 2026-09-06:** 185 unit/integration tests (170 + 15 new portal tests) plus 56 + 51 +
-40 + 29 end-to-end API checks all pass. Fulfillment's flows (Confirm → auto-generated split →
-Accept, Manual Override, Consolidate-after-restock) were driven through the real UI headlessly;
-the billing and portal screens compile and type-check against the real API (`tsc -b && vite
-build` clean) and were verified via live-API scripts, but have not yet had a full browser
-click-through — see `IMPLEMENTATION_LOG.md`'s Known Issues for that entry. `DEMO.md` records the
-expected numbers for the approval flows it covers; the fulfillment, billing and portal flows'
-numbers are recorded in Locked Business Rules #3/#7/#8 and IMPLEMENTATION_LOG.md instead,
-pending a DEMO.md update.
+**Verified 2026-09-06:** 197 unit/integration tests (185 + 12 new upsell tests) plus 56 + 51 +
+40 + 29 + 9 end-to-end API checks all pass. Fulfillment's flows (Confirm → auto-generated split
+→ Accept, Manual Override, Consolidate-after-restock) were driven through the real UI
+headlessly; the billing, portal and upsell work compile and type-check against the real API
+(`tsc -b && vite build` clean) and were verified via live-API scripts, but have not yet had a
+full browser click-through — see `IMPLEMENTATION_LOG.md`'s Known Issues for that entry.
+`DEMO.md` now covers fulfillment, billing and portal negotiation too (see its own changelog
+note at the top).
 
 ## Remaining Work
 
@@ -781,22 +795,14 @@ All of Phase 3 (Core) is done, including customer portal negotiation. Everything
 
 ### Next up
 
-1. **Upsell panel wired to `upsell_rules`** (PRD B5)
-   - 7 rules are seeded. The builder currently shows promoted products as a stand-in; it needs
-     the real co-purchase lookup, the margin-delta figure and the `Dismiss` action
-
-### Then Phase 5 (Supporting)
-
-2. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
-3. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
-4. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
+1. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
+2. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
+3. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
    configurable at runtime, only the UI is missing
-5. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
+4. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
 
 ### Deferred deliberately
 
-- **Order-level discount UI** — the endpoint works and is tested; the builder has no button yet,
-  and it needs the overwrite warning required by Locked Business Rules #4
 - **HttpOnly cookie auth** — the refresh token currently lives in `sessionStorage` (moved off
   `localStorage` after a real cross-tab session bug — see IMPLEMENTATION_LOG.md 2026-09-05).
   SECURITY_SPEC Section 7 prefers cookies and that remains the right end state; it needs CSRF

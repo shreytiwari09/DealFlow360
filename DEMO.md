@@ -1,10 +1,13 @@
 # DealFlow360 — Demo Script
 
-Everything in this file was verified working on 2026-09-05 by driving the real
-API (56/56 checks) and the real UI headlessly. Nothing here is aspirational —
+Flows 1-3 were verified on 2026-09-05 by driving the real API (56/56 checks)
+and the real UI headlessly. Flows 4-6 were added on 2026-09-06 once
+fulfillment, billing and the customer portal were built, each verified the
+same way (86, 40 and 29 live-API checks respectively — see
+`IMPLEMENTATION_LOG.md` for the exact entries). Nothing here is aspirational —
 if it is written below, it runs.
 
-**What is NOT built yet is listed in Section 6.** Read it before you demo, so
+**What is NOT built yet is listed in Section 9.** Read it before you demo, so
 you are never surprised by a question.
 
 ---
@@ -32,10 +35,15 @@ curl http://localhost:8000/api/v1/health/ready
 ```
 
 Open **http://localhost:5173** in two browser windows (or one normal + one
-private). One will be the **Sales Rep**, the other the **Sales Manager**. That
-avoids signing in and out mid-demo, which is where live demos die.
+private) for Flows 1-5 — one will be the **Sales Rep**, the other whichever
+approver a flow needs (Sales Manager, then Finance). A third window (or a
+third private/incognito profile) is only needed for Flow 6, signed in as the
+**Customer**, since a portal session and an internal session must never share
+a browser profile — they are genuinely separate accounts with separate
+permissions, not the same login viewed differently.
 
-**Logins** — the login screen has click-to-fill buttons for all of these.
+**Logins** — the login screen is a plain email/password form (no click-to-fill
+buttons; those were removed once this stopped being a first-pass demo build).
 Password for every account: `DealFlow360!demo`
 
 | Role | Email |
@@ -54,7 +62,9 @@ Password for every account: `DealFlow360!demo`
 > checks **every line against its own limit** — because a Gold customer allowed
 > 15% overall can still be given 18% on a thin-margin service line, and that is
 > exactly the discount that quietly destroys margin. The system scores that,
-> decides who has to approve it, and routes it there automatically.
+> decides who has to approve it, and routes it there automatically — and the
+> same order can carry hardware, a subscription, a warehouse split and a
+> customer negotiation, all reconciled on one document.
 
 ---
 
@@ -169,7 +179,127 @@ Fast, and it proves the loop closes. About 1 minute.
 
 ---
 
-## 5. Security — 60 seconds, do this if asked about RBAC
+## 5. Flow 4 — confirm → automatic warehouse split → accept
+
+**Uses the demo's own staged stock numbers.** About 2 minutes. Continues from
+any confirmed-eligible quote, or build a fresh one.
+
+**As the Sales Rep:**
+
+1. **+ New Quotation** → add **Business Laptop 14″**, quantity **10**, discount `0`.
+   → No breach, so **Submit for Approval** sends it straight to `sent`.
+2. Click **Confirm Quotation**. You are taken to the **Fulfillment Detail**
+   screen, which auto-generates a suggested split the moment it opens — there
+   is no separate "compute" button to remember.
+
+**Stop here and talk.** The screen shows, exactly:
+
+| Warehouse | Qty fulfilled |
+|---|---|
+| Main Warehouse | **6 units** |
+| East Depot | **3 units** |
+| *Backorder* | **1 unit outstanding** |
+
+> Say: *"Main only had 6, East had 3. The system split across both rather than
+> failing the whole order, and the last unit is a tracked backorder, not a
+> silent shortfall. Stock is reserved the moment this split is generated, not
+> when someone clicks Accept — that's what stops two confirmations racing for
+> the same last unit."*
+
+**As Finance** (sign in as `finance@dealflow360.example`):
+
+3. Open the same order under **Fulfillment** → **Accept Suggested Split**.
+4. The status badge updates to **Partially Fulfilled** (not "Fulfilled" — one
+   unit is still on backorder).
+
+> Say: *"If they ask about Manual Override — Finance can redistribute the
+> split across warehouses by hand, and the backend re-validates live stock so
+> an override can't oversell either."*
+
+---
+
+## 6. Flow 5 — a hybrid order: one-time hardware + a subscription, billed correctly
+
+**Shows PRD B7's core claim — one time and recurring lines reconciled on a
+single order.** About 2 minutes.
+
+**As the Sales Rep:**
+
+1. **+ New Quotation** → add **27″ 4K Monitor** (one-time), discount `0`.
+2. Add **Premium Support Plan** — this is a subscription product, so a
+   **Plan** column appears on its row. Choose **Premium Support (Monthly)**.
+3. **Submit for Approval** (no breach → `sent`), then **Confirm Quotation**.
+
+> Say: *"Confirming an order is the one trigger point that unlocks both
+> fulfillment and billing — the same instant a warehouse split gets suggested,
+> a one-time invoice line and a recurring subscription both get created."*
+
+**As Finance:**
+
+4. Open **Subscriptions** in the sidebar. The new subscription is there:
+   quantity, plan, current billing cycle.
+5. Open **Invoices**. Two rows exist for this order — one `one_time`, one
+   `recurring` — both `Scheduled`.
+6. Click the one-time row → **Issue Invoice** (assigns an invoice number) →
+   **Record Payment** → status becomes **Paid**.
+
+> Say: *"If they ask about mid-cycle changes: Modify Subscription re-prices
+> the remainder of the current cycle on a strict daily basis and records every
+> input alongside the result — old amount, new amount, days remaining, credit,
+> charge — not just the final number, because a billing dispute needs the
+> whole calculation, not just its answer. Cancel triggers the same kind of
+> credit note automatically, governed by the plan's own refund policy."*
+
+---
+
+## 7. Flow 6 — customer negotiates a discount, quote re-enters approval automatically
+
+**PRD B8's whole point.** About 2 minutes. Needs a third window/profile signed
+in as the customer.
+
+**As the Sales Rep:**
+
+1. **+ New Quotation** → add **Onboarding & Setup Service**, discount `5`
+   (compliant — Services' ceiling is 10%). Submit → straight to `sent`.
+
+**As the Customer** (`portal@acme.example`, third window):
+
+2. Sign in. You land on **My Quotations** — a portal with no sidebar, no
+   internal navigation, just this order.
+3. Open it. Add a comment (*"Can we get 20% instead?"*), set **Counter
+   Discount %** to `20`, click **Submit Request**.
+   → Status becomes **Under Negotiation**.
+4. Click **Confirm Quotation**.
+
+> Say: *"20% against Services' 10% ceiling breaches policy — so confirming
+> doesn't confirm anything yet. It automatically re-enters the exact same
+> approval flow Screen 6 uses for an internal submission."* The customer sees
+> a message saying so, and their status stays **Under Negotiation** — they are
+> never shown the internal "Pending Approval" state.
+
+**As the Sales Manager:**
+
+5. Open **Approvals**. The new request is there. Open it — the audit trail
+   shows *"customer confirmed negotiated terms; re-entered approval"*, so it's
+   visibly not a first-time submission.
+6. **Approve** with a reason.
+
+**As the Customer again:**
+
+7. Click **Confirm Quotation** once more.
+   → This time it goes straight through to **Confirmed** — the system
+   recognises these exact terms were just approved and does not send it back
+   to the same manager a second time.
+
+> Say: *"That last step is the subtle part. Re-scoring on every confirm is
+> correct, but re-scoring alone would mean a quote that was ever approved
+> could never actually be confirmed — it would always still 'breach policy'
+> because nothing about it changed. The system checks whether an approval
+> already covers these exact terms, not just whether they'd currently pass."*
+
+---
+
+## 8. Security — 60 seconds, do this if asked about RBAC
 
 All verified:
 
@@ -178,7 +308,9 @@ All verified:
 | Sign in as the **rep**, look at an approval | No Approve button — and the API returns **403** if called directly |
 | **Finance** tries to approve before the Manager | **403** — steps are sequential |
 | Sign in as the **customer** (`portal@acme.example`) | Lands on the portal, **never** the internal shell |
-| Customer opens another company's quotation | **403** |
+| An internal user calls a `/portal/*` route directly | **403** — a genuinely separate, permission-gated surface, not a filtered view |
+| Customer opens another company's quotation | **404** — existence itself is not revealed to someone who can't see it |
+| A rep tries the Admin-only confirm override | **403** — `deal.confirm_override` is seeded to Admin alone |
 | Wrong password / unknown email | Identical generic message — no user enumeration |
 
 > Say: *"Authorization is permission-based, not `if role == manager`. And a
@@ -197,31 +329,31 @@ Extra credit if they press on it:
 
 ---
 
-## 6. What is NOT built — say this before they find it
+## 9. What is NOT built — say this before they find it
 
 Be upfront. The sidebar deliberately shows these greyed out rather than as
 links that go nowhere.
 
 | Area | State |
 |---|---|
-| **Fulfillment / warehouse split** | Schema, stock and seed data exist (Laptop: 6 in Main, 3 in East). No API, no screen. |
-| **Subscriptions & hybrid billing** | Full schema including proration records. No API, no screen. |
-| **Invoices & payments** | Schema only. |
-| **Customer portal negotiation** | Portal login works and is correctly restricted; the negotiation screen itself is a placeholder. |
-| **Deal health dashboard** | Schema only; thresholds deliberately not yet defined. |
+| **Deal health dashboard** | Schema only; anomaly thresholds deliberately not yet defined (a real, open decision — not an oversight). |
 | **Reports / exports** | Not started. |
-| **Admin config screens** | Discount tiers and approval chains are configurable **as data** and seeded; no UI to edit them yet. |
-| **Order-level discount** | API endpoint works; no button in the builder yet. |
+| **Admin config screens** | Discount tiers and approval chains are configurable **as data** via the API and seeded; no UI to edit them yet. |
+| **Product catalogue screens** | Products are seeded and used everywhere; no admin UI to create/edit one. |
+| **Automatic backorder consolidation** | The action exists (`Consolidate` on Screen 8); nothing yet watches for a restock and surfaces the prompt unprompted — needs a background job. |
+| **Automatic subscription renewal** | A subscription's billing cycle does not roll forward on its own once it ends; needs a scheduler. |
 
-> Say: *"We built the spine end to end rather than every screen half-way. The
-> data model covers all of it — 30 tables, migrated — and the two flows that
-> demonstrate the actual business logic work completely."*
+> Say: *"Everything in the PRD's Core classification is built and tested end
+> to end — quotation, approval routing, fulfillment, hybrid billing, and the
+> customer portal all work against the real API, not a mock. What's left is
+> Supporting scope: dashboards and admin screens over data that's already
+> correctly modelled and enforced underneath."*
 
 ---
 
-## 7. If they ask "what is actually hard here?"
+## 10. If they ask "what is actually hard here?"
 
-Three honest answers, all defensible:
+Four honest answers, all defensible:
 
 **The score is a weighted mean, so it can never exceed its worst line.**
 That is why the `>15` single-line gate exists as a separate rule — without it,
@@ -239,21 +371,31 @@ data changes. An approved quotation has to stay reproducible, and
 `allowed_discount_percent` on the line answers the question an auditor actually
 asks: *what was the policy when this was approved?*
 
+**Re-approval has to check "was this approved," not "does this pass."** A
+quotation approved at 18% still scores as breaching policy forever afterward —
+nothing about it changed. If confirming re-checked the score alone, no
+quotation that ever needed approval could ever be confirmed; it would bounce
+back to the same approver endlessly. The system instead checks whether an
+`ApprovalRequest` already covers these exact terms (same blended score, same
+max line excess) before deciding whether to route it again.
+
 ---
 
-## 8. Numbers worth memorising
+## 11. Numbers worth memorising
 
 | | |
 |---|---|
 | Gold tier ceilings | Hardware **15%**, Services **10%**, Subscriptions **8%** |
 | PRD example | Laptop 12% (OK) + Service 18% (8 pt over) → score **1.33** → Manager |
 | Finance escalation | Laptop 35% = 20 pt over → gate at 15 → **Manager + Finance** |
-| Schema | 30 tables, 70 foreign keys, 2 migrations |
-| Tests | 124 automated, plus 56 end-to-end API checks |
+| Warehouse split | 10 laptops ordered → **6 from Main + 3 from East + 1 backordered** |
+| Proration (locked formula) | 1200/mo → 1800/mo, day 10 of 30 → credit 800.00, charge 1200.00, **+400.00** |
+| Schema | 30 tables, 70+ foreign keys, 2 migrations |
+| Tests | 197 automated, plus 56 + 51 + 40 + 29 + 9 end-to-end API checks across every feature |
 
 ---
 
-## 9. If something breaks live
+## 12. If something breaks live
 
 ```bash
 docker compose restart backend

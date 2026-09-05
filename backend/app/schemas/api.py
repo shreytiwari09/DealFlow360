@@ -510,3 +510,15 @@ class PortalConfirmResponse(BaseModel):
     quotation: PortalQuotationDetailResponse
     re_entered_approval: bool
     message: str
+
+
+# --- Upsell / cross-sell (PRD A6, B5) ---------------------------------------
+
+
+class UpsellSuggestionResponse(BaseModel):
+    product_id: int
+    product_name: str
+    product_sku: str
+    list_price: Decimal
+    is_promoted: bool
+    margin_delta_percent: Decimal

@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
-import type { Product, Quotation, RiskPreview, SubscriptionPlan } from "../lib/api";
+import type { Product, Quotation, RiskPreview, SubscriptionPlan, UpsellSuggestion } from "../lib/api";
 import { humanise, money, percent, points } from "../lib/format";
 import {
   ErrorState,
@@ -48,6 +48,12 @@ export default function QuotationDetail() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [orderDiscount, setOrderDiscount] = useState("");
+  const [suggestions, setSuggestions] = useState<UpsellSuggestion[]>([]);
+  // Session-local only (PRD B5's "Dismiss" has no persistence requirement,
+  // and FRONTEND.md leaves the affordance's exact behaviour TBD) - a
+  // dismissed suggestion can reappear next visit, but not this one.
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
 
   /*
    * The draft is mirrored into a ref, and every save reads the ref rather
@@ -61,6 +67,21 @@ export default function QuotationDetail() {
    */
   const draftRef = useRef<DraftLine[]>([]);
   const debounceRef = useRef<number | null>(null);
+
+  /**
+   * Re-fetches ranked suggestions (PRD B5). Called whenever the lines or
+   * discounts change, since both the "already on quote" exclusion and the
+   * live margin-delta figure depend on the quotation's current state.
+   * Failure here is non-fatal — the panel just stays empty — since it must
+   * never block the rest of the builder from working.
+   */
+  const loadSuggestions = useCallback(async (quotationId: number) => {
+    try {
+      setSuggestions(await api.get<UpsellSuggestion[]>(`/quotations/${quotationId}/upsell`));
+    } catch {
+      setSuggestions([]);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -85,12 +106,13 @@ export default function QuotationDetail() {
       draftRef.current = lines;
       setRisk(await api.get<RiskPreview>(`/quotations/${id}/risk`));
       setDirty(false);
+      void loadSuggestions(q.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load this quotation.");
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, loadSuggestions]);
 
   useEffect(() => {
     void load();
@@ -119,13 +141,14 @@ export default function QuotationDetail() {
         setQuotation(updated);
         setRisk(await api.get<RiskPreview>(`/quotations/${quotation.id}/risk`));
         setDirty(false);
+        void loadSuggestions(updated.id);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not save the lines.");
       } finally {
         setSaving(false);
       }
     },
-    [quotation],
+    [quotation, loadSuggestions],
   );
 
   /** Save whatever the ref currently holds. Immune to render timing. */
@@ -222,6 +245,53 @@ export default function QuotationDetail() {
    * cleared approval (or never needed it), matching the states the state
    * machine allows a direct jump to `confirmed` from.
    */
+  /**
+   * Order-level discount (PRD B3, Locked Business Rules #4): distributes one
+   * percentage onto EVERY line, overwriting whatever was there. That is
+   * destructive to any manually-set per-line discount, so the caller (this
+   * component) is responsible for warning first — the backend applies it
+   * unconditionally the moment it is called.
+   */
+  async function applyOrderDiscount() {
+    if (!quotation) return;
+    const value = Number(orderDiscount);
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+      setError("Enter a discount between 0 and 100.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Apply ${value}% to every line? This overwrites any discount already set per line.`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await api.post<Quotation>(`/quotations/${quotation.id}/order-discount`, {
+        discount_percent: value,
+      });
+      setQuotation(updated);
+      const lines = updated.lines.map((line) => ({
+        product_id: line.product_id,
+        quantity: line.quantity,
+        discount_percent: line.discount_percent,
+        added_from_upsell: line.added_from_upsell,
+        subscription_plan_id: line.subscription_plan_id,
+      }));
+      setDraft(lines);
+      draftRef.current = lines;
+      setRisk(await api.get<RiskPreview>(`/quotations/${quotation.id}/risk`));
+      setOrderDiscount("");
+      void loadSuggestions(updated.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not apply the order-level discount.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function confirmQuotation() {
     if (!quotation) return;
     setSaving(true);
@@ -239,15 +309,11 @@ export default function QuotationDetail() {
 
   const canConfirm = ["approved", "sent", "under_negotiation"].includes(quotation?.status ?? "");
 
-  /**
-   * Upsell suggestions (PRD B5). The seeded rules live server-side; until the
-   * rules endpoint exists this surfaces promoted products not already on the
-   * quote, which is the same shape of suggestion the panel will show.
-   */
-  const suggestions = useMemo(() => {
-    const onQuote = new Set(draft.map((line) => line.product_id));
-    return products.filter((p) => p.is_promoted && !onQuote.has(p.id)).slice(0, 3);
-  }, [products, draft]);
+  // PRD B5's ranked panel, minus whatever the rep dismissed this visit.
+  const visibleSuggestions = useMemo(
+    () => suggestions.filter((s) => !dismissed.has(s.product_id)),
+    [suggestions, dismissed],
+  );
 
   if (loading) return <TableSkeleton rows={5} cols={6} />;
   if (error && !quotation) return <ErrorState message={error} onRetry={() => void load()} />;
@@ -490,25 +556,74 @@ export default function QuotationDetail() {
             </div>
           )}
 
-          {editable && suggestions.length > 0 && (
+          {editable && quotation.lines.length > 0 && (
+            <div className="card">
+              <h2 className="card__title">Order-level discount</h2>
+              <div className="row" style={{ gap: "var(--space-2)" }}>
+                <input
+                  className="input input--num"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.5"
+                  value={orderDiscount}
+                  onChange={(e) => setOrderDiscount(e.target.value)}
+                  placeholder="%"
+                />
+                <button
+                  className="btn"
+                  disabled={saving || !orderDiscount}
+                  onClick={() => void applyOrderDiscount()}
+                >
+                  Apply to all lines
+                </button>
+              </div>
+              <div style={{ marginTop: "var(--space-2)" }}>
+                <NoteBar>
+                  Overwrites every line&apos;s discount with this one percentage — it does not
+                  stack with what is already there.
+                </NoteBar>
+              </div>
+            </div>
+          )}
+
+          {editable && visibleSuggestions.length > 0 && (
             <div className="card">
               <h2 className="card__title">Upsell &amp; cross-sell</h2>
-              {suggestions.map((product) => (
-                <div key={product.id} className="row row--between" style={{ marginBottom: 8 }}>
-                  <div>
-                    <div className="primary-cell">{product.name}</div>
-                    <div className="sub-cell">
-                      <span className="badge badge--accent">Promoted</span>
+              {visibleSuggestions.map((s) => {
+                const delta = Number(s.margin_delta_percent);
+                return (
+                  <div key={s.product_id} className="row row--between" style={{ marginBottom: 8 }}>
+                    <div>
+                      <div className="primary-cell">{s.product_name}</div>
+                      <div className="sub-cell">
+                        {s.is_promoted && (
+                          <span className="badge badge--accent" style={{ marginRight: 6 }}>
+                            Promoted
+                          </span>
+                        )}
+                        <span className={delta >= 0 ? "badge badge--success" : "badge badge--warning"}>
+                          {delta >= 0 ? "+" : ""}
+                          {delta.toFixed(2)}% margin
+                        </span>
+                      </div>
+                    </div>
+                    <div className="row" style={{ gap: 4 }}>
+                      <button
+                        className="btn btn--sm"
+                        onClick={() =>
+                          setDismissed((current) => new Set(current).add(s.product_id))
+                        }
+                      >
+                        Dismiss
+                      </button>
+                      <button className="btn btn--sm btn--primary" onClick={() => addProduct(s.product_id, true)}>
+                        + Add
+                      </button>
                     </div>
                   </div>
-                  <button
-                    className="btn btn--sm"
-                    onClick={() => addProduct(product.id, true)}
-                  >
-                    + Add
-                  </button>
-                </div>
-              ))}
+                );
+              })}
               <NoteBar>Adding a suggestion updates the margin indicator immediately.</NoteBar>
             </div>
           )}

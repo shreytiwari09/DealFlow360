@@ -26,10 +26,28 @@ from app.services.risk import LineRiskInput, RiskAssessment, assess_lines
 from app.services.state_machine import assert_transition
 
 _MONEY = Decimal("0.01")
+# Matches `quotation_lines.discount_percent`'s Numeric(5, 2) column scale.
+_PERCENT = Decimal("0.01")
 
 
 def _money(value: Decimal) -> Decimal:
     return value.quantize(_MONEY, rounding=ROUND_HALF_UP)
+
+
+def quantize_percent(value: Decimal) -> Decimal:
+    """Quantize a discount percentage to the column's own 2dp scale.
+
+    Without this, a value set directly from a request body (e.g. a bare `20`,
+    which Pydantic parses as `Decimal("20")`, not `"20.00"`) prints without
+    trailing zeros in the very same response that shows every DB-round-tripped
+    discount as `"20.00"` — cosmetic, but confusing on a screen that shows
+    both. Same fix already applied to the portal's counter discount
+    (`services/portal.py`'s `_percent()`) and subscription quantity
+    (`services/billing.py`'s `_qty()`); this is the third and, as far as a
+    project-wide grep can tell, last occurrence — see PROJECT_CONTEXT.md
+    Known Issues.
+    """
+    return value.quantize(_PERCENT, rounding=ROUND_HALF_UP)
 
 
 async def ceilings_for_tier(session: AsyncSession, tier: CustomerTier) -> dict[int, Decimal]:

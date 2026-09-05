@@ -968,3 +968,134 @@ panel wired to real `upsell_rules` data (PRD B5) — 7 rules seeded, builder cur
 promoted products as a stand-in; (2) Deal health dashboard — blocked on anomaly thresholds still
 being undefined; (3) Reporting with filters + export; (4) Admin config screens for discount
 tiers/approval chains — data is already configurable via the API, only the UI is missing.
+
+---
+
+## 2026-09-06 — Gap Sweep, Order-Level Discount UI, Upsell Panel, DEMO.md Rewrite
+
+### Goal
+User asked to fix the gaps recorded in the previous entries' Known Issues, then continue
+building the next backlog item. Three gaps closed: the display-precision cosmetic (noted but
+not swept in the portal session), the missing Order-Level Discount UI (deferred since Phase 3
+began), and `DEMO.md` not covering fulfillment/billing/portal. Then implemented the top
+"Remaining Work" item: the Upsell & Cross-Sell panel wired to real `upsell_rules` data (PRD A6,
+B5), closing out everything that was flagged as a stand-in.
+
+### Implemented
+
+**1. Display-precision sweep.** Added `quantize_percent()` to `app/services/quotation.py`
+(matching the shape of `services/billing.py`'s `_qty()` and `services/portal.py`'s `_percent()`
+from the previous two sessions) and applied it everywhere a `discount_percent` is set directly
+from a request body: `replace_lines` and `apply_order_discount`. A project-wide grep for the
+same pattern (a `Numeric(...)` column assigned straight from a Pydantic field) found no further
+occurrences.
+
+**2. Order-Level Discount UI** (Locked Business Rules #4). The endpoint has existed and been
+tested since Phase 3; the builder never had a control for it. Added one: a percentage input and
+an "Apply to all lines" button, gated behind a `window.confirm` warning that it overwrites every
+line's discount — the same destructive-action pattern already used for Approval's Reject and
+the portal's Cancel Subscription.
+
+**3. `app/services/upsell.py`** — pure ranking/filtering, mirroring `risk.py`'s shape:
+- `rank_suggestions()` — suppresses any candidate below its own margin floor, then sorts by
+  `is_promoted` (primary key, per `app/models/upsell.py`'s own docstring) then
+  `co_purchase_score` (tiebreaker).
+- `product_margin_percent()` — a product's own `(list_price - cost_price) / list_price`.
+- `margin_delta_if_added()` — PRD B5's live "margin delta if added" figure, computed by
+  simulating exactly the line `addProduct()` in the builder would create (qty 1, 0% discount) —
+  the number shown is the number that would actually appear a moment after clicking "+ Add",
+  not a guess computed some other way.
+
+**One documented judgment call, not raised as a question:** `upsell_rules.min_margin_percent`'s
+own docstring says the "live margin delta... must clear `min_margin_percent`," which read
+literally would compare the floor against the small delta figure above. The seeded floors
+(10-20) only make sense as plausible *product* margin percentages, not as swings in a blended
+order margin (normally a few points at most), so the floor is compared against
+`product_margin_percent()` instead. Low-stakes and reversible — implemented and documented
+rather than pausing to ask, per PLAN.md §0.6's own allowance for a defensible default.
+
+**4. `GET /quotations/{id}/upsell` endpoint.** Loads the quotation's current products as
+triggers, excludes anything already on the quote (from both the suggestion list and as a
+possible suggestion target), collapses duplicate suggestions from more than one trigger down to
+the highest-scoring rule, computes each one's margin delta against the quotation's actual
+current totals, and returns the ranked, filtered list.
+
+**5. Frontend:** the builder's Upsell & Cross-Sell panel now calls the real endpoint instead of
+filtering for promoted products, shows the margin-delta badge (colour-coded positive/negative),
+and has a `Dismiss` button. Dismissal is session-local state only (a `Set` in the component, not
+persisted) — PRD B5 draws a "Dismiss" button but never specifies whether a dismissal should
+survive a reload, and FRONTEND.md leaves the exact affordance `TBD`; persisting it would need a
+new table for a session-scoped judgement call, so it stays client-side. Suggestions refresh
+after every line change, discount change, and order-level discount application, since the
+margin-delta figure depends on the quotation's live totals.
+
+**6. `DEMO.md` rewritten to match reality.** Removed the stale claim that the login screen has
+click-to-fill buttons (removed two sessions ago). Added three new flows using the exact numbers
+already verified by this session's and the previous two sessions' live-API scripts: Flow 4
+(confirm → auto-generated warehouse split → accept), Flow 5 (a hybrid one-time + subscription
+order → billing schedule → issue invoice → record payment), Flow 6 (customer portal counter-offer
+→ automatic re-entry into approval → manager approves → customer re-confirms). Rewrote the
+"What is NOT built" section, which previously claimed fulfillment, billing and the portal had
+"no API, no screen" — all three are now fully built and tested. Updated the numbers-worth-
+memorising table and test counts.
+
+### Files Changed
+- `backend/app/services/quotation.py` (`quantize_percent()`)
+- `backend/app/api/v1/endpoints/quotations.py` (precision fix; new `/upsell` endpoint)
+- `backend/app/services/upsell.py` (new)
+- `backend/app/schemas/api.py` (`UpsellSuggestionResponse`)
+- `backend/tests/test_upsell.py` (new — 12 tests)
+- `frontend/src/screens/QuotationDetail.tsx` (order-discount control; real upsell panel)
+- `frontend/src/lib/api.ts` (`UpsellSuggestion` type)
+- `DEMO.md` (three new flows, corrected "not built" section, updated numbers)
+- `PROJECT_CONTEXT.md`, `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+- Decision: `min_margin_percent` gates on the suggested product's own margin, not the order-wide
+  margin delta.
+- Reason: see Implemented §3 above — the seeded floor values only make sense as product-margin
+  percentages, and using them as a floor on a typically-small delta would suppress almost every
+  suggestion regardless of how healthy the product actually is.
+
+- Decision: "Dismiss" is session-local only, no persistence.
+- Reason: PRD B5 and FRONTEND.md both leave the exact behaviour unspecified; a session-scoped
+  dismissal needs no schema change, while a persistent one would need a new table for a UX
+  detail neither source document commits to.
+
+### Validation
+- Tests: **197 backend tests pass** (185 prior + 12 new upsell tests). Coverage: `is_promoted`
+  ranks above a higher `co_purchase_score` (not merely a tiebreaker); score breaks ties within
+  the same promotion tier; below-floor candidates are suppressed entirely, not de-prioritized;
+  exactly-at-the-floor is not suppressed; empty/all-suppressed inputs rank to empty;
+  `product_margin_percent` handles a zero list price and a genuine negative margin without
+  crashing or clamping; `margin_delta_if_added` is tested for a margin-accretive addition, a
+  margin-dilutive one, and an order with zero current revenue (division-by-zero guard).
+- `ruff check .` / `ruff format --check .` clean. Frontend `tsc -b && vite build` clean.
+- Manual verification against real seeded PostgreSQL: a 9-check live-API script (empty
+  quotation returns no suggestions; a laptop-only quote returns exactly the four seeded
+  HW-LAPTOP-triggered suggestions with the promoted HW-DOCK ranked first; the laptop itself is
+  never self-suggested; adding a suggested product removes it from the list without removing
+  others; a user with broader read access can view another rep's quote's suggestions). Re-ran
+  the previous two sessions' 40-check billing and 29-check portal scripts unchanged — both still
+  pass, confirming the precision fix and quotation-service changes introduced no regression.
+
+### Known Issues
+- No full browser click-through of the order-discount control or the real upsell panel yet —
+  `tsc -b && vite build` confirms they compile and type-check; same gap noted for billing and
+  portal in the previous two entries.
+- The "Dismiss" affordance's exact persistence behaviour remains `TBD` per FRONTEND.md; the
+  session-local choice here is a reasonable default, not a locked rule.
+
+### Current State
+Phase 3 (Core) plus the first Phase 5 (Supporting) item are both complete and verified. Every
+gap flagged in the two previous sessions' Known Issues sections is closed except the
+browser-click-through item, which is a verification-thoroughness note, not a functional defect.
+`DEMO.md` is now an accurate, complete script covering five real end-to-end flows plus security
+talking points.
+
+### Next Recommended Step
+PROJECT_CONTEXT.md's "Remaining Work", all 🟡 Supporting scope: (1) Deal health dashboard —
+blocked on anomaly thresholds still being undefined, needs a decision before it can start;
+(2) Reporting with filters + PDF/XLS export; (3) Admin config screens for discount tiers and
+approval chains (Screen 18) — the data is already configurable via the API, only the UI is
+missing; (4) Product catalogue screens (16-17), manual warehouse override UI, nudges/escalations.

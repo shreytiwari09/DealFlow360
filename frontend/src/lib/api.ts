@@ -469,3 +469,14 @@ export interface PortalConfirmResult {
   re_entered_approval: boolean;
   message: string;
 }
+
+// --- Upsell / cross-sell (PRD A6, B5) --------------------------------------
+
+export interface UpsellSuggestion {
+  product_id: number;
+  product_name: string;
+  product_sku: string;
+  list_price: string;
+  is_promoted: boolean;
+  margin_delta_percent: string;
+}

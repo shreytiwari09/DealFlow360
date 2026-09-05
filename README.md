@@ -5,14 +5,17 @@ discount discipline, real-time multi-warehouse inventory awareness, reconciled
 one-time + recurring billing on a single order, and a live customer negotiation
 portal.
 
-**Stack:** FastAPI (Python 3.12) · React + TypeScript (Vite) · PostgreSQL 16 ·
-SQLAlchemy 2 (async) + Alembic · Docker Compose. Everything runs in containers —
-**the only things you need installed are Git and Docker Desktop.**
+**Stack:** FastAPI (Python 3.12) · React + TypeScript (Vite) · PostgreSQL 16+ ·
+SQLAlchemy 2 (async) + Alembic · Docker Compose for the backend/frontend.
+**Postgres runs natively on your machine, not in a container** — see
+"Database setup" below for why and how.
 
-> **Status: working, demoable application.** Login (all 5 roles), the quotation
-> builder with a live blended discount risk score, automatic approval routing
-> (including a two-step Manager → Finance chain), approve/reject/return with a
-> mandatory reason, and a full audit trail all work end-to-end right now.
+> **Status: all PRD Core scope is complete and demoable**, plus the first
+> Supporting-scope items. Login (all 5 roles), the quotation builder with a
+> live blended discount risk score and a real upsell panel, automatic approval
+> routing, multi-warehouse fulfillment with backorders, hybrid one-time +
+> subscription billing with proration, and a genuinely separate customer
+> negotiation portal all work end-to-end against the real API.
 > See [`DEMO.md`](DEMO.md) for the exact script — every number in it was
 > verified against the running system. `IMPLEMENTATION_LOG.md` has the full
 > chronological build history; `PROJECT_CONTEXT.md` has the current backlog.
@@ -21,17 +24,37 @@ SQLAlchemy 2 (async) + Alembic · Docker Compose. Everything runs in containers 
 
 ## Run it on a brand-new machine — copy/paste this whole block
 
-Requires only **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
-and **Git**. Nothing else — no Python, no Node, no PostgreSQL install. Works
-identically on Windows, macOS, and Linux.
+Requires **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**,
+**Git**, and a **local PostgreSQL install** (16 or newer) — see "Database
+setup" immediately below if you don't have one yet. Backend and frontend run
+in containers; only Postgres runs directly on the host.
+
+### Database setup (one time)
+
+The app needs a dedicated role and database. Using `psql` (adjust the port if
+your local Postgres doesn't use the default 5432 — check with
+`pg_isready` or your `postgresql.conf`):
+
+```bash
+psql -U postgres -h localhost -p 5432 -c "CREATE ROLE dealflow LOGIN PASSWORD 'pick-a-real-password';"
+psql -U postgres -h localhost -p 5432 -c "CREATE DATABASE dealflow360 OWNER dealflow;"
+```
+
+That's it — no other Postgres configuration is required. On Docker Desktop
+(Windows/Mac), the backend container reaches this via `host.docker.internal`,
+which resolves to the host automatically; you do not need to touch
+`pg_hba.conf` or `listen_addresses` for this to work. (Native Linux Docker
+needs one extra `extra_hosts` line in `docker-compose.yml` — see the comment
+at the top of that file.)
 
 ```bash
 git clone https://github.com/shreytiwari09/DealFlow360.git
 cd DealFlow360
 
 cp .env.example .env
-# Open .env and set POSTGRES_PASSWORD and JWT_SECRET_KEY to anything non-empty
-# for local/demo use (see "Secrets" below for how to generate a real one).
+# Open .env and fill in the real values: the POSTGRES_PASSWORD you just set
+# above, POSTGRES_PORT if it isn't 5432, and a real JWT_SECRET_KEY (see
+# "Secrets" below for how to generate one).
 
 docker compose up -d --build
 ```
@@ -45,8 +68,8 @@ docker compose exec backend alembic upgrade head
 docker compose exec backend python -m app.seed
 ```
 
-Open **http://localhost:5173** and sign in — the login screen has click-to-fill
-buttons for every demo account. Password for all of them: `DealFlow360!demo`
+Open **http://localhost:5173** and sign in with a plain email/password login.
+Password for every demo account: `DealFlow360!demo`
 
 | Role | Email |
 |---|---|
@@ -77,12 +100,12 @@ system, not written from memory.
 
 ### A frozen, known-good checkpoint
 
-The commit tagged **`demo-v1`** is a fully verified snapshot — 124 automated
-tests plus 56 end-to-end API checks pass on it, and both demo flows were
-driven through the real UI with no runtime errors. Development continues on
-`main`; `demo-v1` never moves. If you're mid-feature and a demo comes up
-unannounced, switch to the known-good state instead of demoing work in
-progress:
+The commit tagged **`demo-v1`** is a fully verified early snapshot (Phase 3
+part 1 — the two approval-routing flows). `main` has since completed the rest
+of PRD Core scope (fulfillment, billing, portal) plus upsell — see
+`IMPLEMENTATION_LOG.md` for the verified state of each. `demo-v1` never moves.
+If you're mid-feature and a demo comes up unannounced, switch to the
+known-good state instead of demoing work in progress:
 
 ```bash
 git fetch --tags
@@ -126,7 +149,7 @@ docker compose -p dealflow360-demo up -d --build
 | Frontend | http://localhost:5173 | React + Vite dev server |
 | Backend API | http://localhost:8000 | FastAPI |
 | API docs | http://localhost:8000/docs | Interactive OpenAPI UI (dev only, disabled in production) |
-| PostgreSQL | `localhost:5432` | Bound to `127.0.0.1` only, not exposed externally |
+| PostgreSQL | `localhost:<your POSTGRES_PORT>` | Runs on the host, not in a container — see "Database setup" above |
 
 ---
 
@@ -156,13 +179,14 @@ Run against the live containers — no local Python/Node toolchain needed for an
 # --- Demo data -------------------------------------------------------------
 docker compose exec backend python -m app.seed          # idempotent, safe to re-run anytime
 
-# Full reset (wipes all data, rebuilds from empty):
-docker compose exec db psql -U dealflow -d dealflow360 -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+# Full reset (wipes all data, rebuilds from empty) - run against your LOCAL
+# Postgres, not through docker compose exec, since Postgres isn't containerized:
+psql -U dealflow -h localhost -p <your POSTGRES_PORT> -d dealflow360 -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 docker compose exec backend alembic upgrade head
 docker compose exec backend python -m app.seed
 
 # --- Backend -----------------------------------------------------------------
-docker compose exec backend pytest                 # 124 tests (run the seed first - some read seeded rows)
+docker compose exec backend pytest                 # 197 tests (run the seed first - some read seeded rows)
 docker compose exec backend ruff check .           # lint
 docker compose exec backend ruff format .          # format
 
@@ -177,7 +201,8 @@ docker compose exec frontend npm run typecheck
 docker compose exec frontend npm run build
 
 # --- Database shell --------------------------------------------------------
-docker compose exec db psql -U dealflow -d dealflow360
+# Directly against your local Postgres - not through docker compose exec:
+psql -U dealflow -h localhost -p <your POSTGRES_PORT> -d dealflow360
 
 # --- Logs / status -----------------------------------------------------------
 docker compose ps
@@ -185,8 +210,9 @@ docker compose logs backend --tail 50
 docker compose logs frontend --tail 50
 
 # --- Stop everything ---------------------------------------------------------
-docker compose down          # stop, keep data
-docker compose down -v       # stop, DELETE all data (fresh start next time)
+docker compose down          # stop backend/frontend containers; Postgres (on the
+                              # host) is untouched either way, since it isn't
+                              # part of this compose project
 ```
 
 ---
@@ -199,10 +225,19 @@ Windows: `Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"`
 in PowerShell) and wait ~30-60 seconds for the whale icon to stop animating,
 then retry.
 
-**A port is already in use (`5173`, `8000`, or `5432`).**
+**A port is already in use (`5173` or `8000`).**
 Something else on the machine is using it. Either stop that process, or edit
 the port mapping on the left-hand side in `docker-compose.yml` (e.g.
 `"5174:5173"`) and use the new port in your browser.
+
+**Postgres port conflict, or the backend can't reach Postgres at all.**
+`POSTGRES_PORT` in `.env` must match whatever your local Postgres actually
+listens on — check with `pg_isready` or your `postgresql.conf`. If you
+previously ran this project's own Dockerized Postgres, that container may
+still be bound to `5432`; stop it (`docker stop <container>`) or just pick a
+different `POSTGRES_PORT` for your local install. `POSTGRES_HOST` must stay
+`host.docker.internal` (not `localhost`, which inside the backend container
+means the container itself, and not your local Postgres).
 
 **Frontend loads but shows a blank page, gets stuck on "Loading…", or numbers
 never appear.**
@@ -224,9 +259,12 @@ Click **+ New Quotation** to create one, or see `DEMO.md` for a full script
 that populates realistic demo data as it goes.
 
 **`alembic upgrade head` or the seed command fails right after `docker compose up`.**
-The backend started before Postgres finished initializing on a very slow
-first boot. Wait ~10 seconds and retry — `docker compose ps` should show `db`
-as `healthy` before either command is expected to work.
+Confirm your local Postgres is actually running and the credentials/port in
+`.env` are correct: `curl http://localhost:8000/api/v1/health/ready` should
+show `"database":"ok"` — if it shows `"database":"unavailable"` instead, fix
+`.env` and recreate the backend container with `docker compose up -d backend`
+(a plain `restart` reuses the old environment and will not pick up `.env`
+changes).
 
 **I changed backend code and nothing seems to update.**
 The backend container runs with `--reload` and picks up changes automatically
@@ -246,7 +284,7 @@ after changing `requirements.txt`.
 ├── FRONTEND.md              Screen-by-screen UI spec (the Phase 8 design input)
 ├── DEMO.md                  Verified demo script — what to click, expected numbers
 ├── docs/erd.md              ERD, system architecture diagram, state machines
-├── docker-compose.yml       Postgres + backend + frontend (no Redis)
+├── docker-compose.yml       Backend + frontend only — Postgres runs on the host
 ├── .env.example             Placeholder environment file
 │
 ├── backend/

@@ -38,8 +38,32 @@ DealFlow360 is a self-governing B2B sales operations platform — a full quote-t
 ## Current Architecture
 - **Backend:** FastAPI (Python 3.12) — async-native, Pydantic v2 validation, auto-generated OpenAPI docs (disabled in production).
 - **Frontend:** React 18 + TypeScript, built with Vite. **Design input RECEIVED 2026-09-05** — `FRONTEND.md` is the implementation contract: 18 screens, two shells, design tokens, component inventory, route map and a TBD list. It is the Phase 8 design input PLAN.md Section 13 was waiting for, so the UI hold is lifted. FRONTEND.md is authoritative for screen content and visual chrome; the backend remains authoritative for data shape and for every authorization decision.
-- **Database:** PostgreSQL 16 via SQLAlchemy 2 (async, `asyncpg`) + Alembic (versioned migrations — required, not optional, per ERP industry-standard practice).
-- **Infra:** Docker Compose (Postgres + backend + frontend). No Redis.
+- **Database:** PostgreSQL, via SQLAlchemy 2 (async, `asyncpg`) + Alembic (versioned migrations — required, not optional, per ERP industry-standard practice). **Runs natively on the host, not in a container** (changed 2026-09-06 at the user's request — see "Database" below); the app itself has no idea whether Postgres is containerized, since `POSTGRES_HOST`/`PORT` are plain settings.
+- **Infra:** Docker Compose for backend + frontend only. No Redis.
+
+### Database
+
+Postgres is installed directly on the development machine (currently PostgreSQL 18 on
+Windows), not run as a Docker service. `docker-compose.yml`'s `db` service and `pgdata`
+volume were removed entirely; the backend container reaches the host's Postgres via
+`POSTGRES_HOST=host.docker.internal`, which Docker Desktop (Windows/Mac) resolves to the
+host automatically — no `pg_hba.conf` or `listen_addresses` change was needed, because
+Docker Desktop's internal proxy makes a `host.docker.internal` connection appear to
+Postgres as a plain loopback (`127.0.0.1`) connection, which the default install already
+allows. Verified directly: `docker run --rm postgres:16-alpine psql -h host.docker.internal
+...` succeeded against the host's Postgres with `inet_server_addr()` reporting `127.0.0.1`.
+A dedicated `dealflow` role (not the `postgres` superuser) owns a dedicated `dealflow360`
+database, matching the least-privilege principle the previous Dockerized setup already
+followed. Native Linux Docker does not have this proxy behavior and would need an
+`extra_hosts: ["host.docker.internal:host-gateway"]` line plus a real `pg_hba.conf`
+allowance for the container's bridge subnet — noted in `docker-compose.yml`'s header
+comment for whoever hits this next, but not implemented since the dev machine is Windows.
+
+**Trade-off, stated plainly:** the README's "clone and run, nothing else installed"
+promise is now weaker — a local Postgres install is a genuine prerequisite, not just
+Docker and Git. This was an explicit, deliberate choice at the user's request ("database
+should be on there only"), not a silent regression; `README.md`'s setup section documents
+the one-time `CREATE ROLE`/`CREATE DATABASE` steps a fresh clone now needs.
 - **NOT using:** the Odoo framework itself (any stack allowed per hackathon rules) — business logic conceptually mirrors Odoo's domain model.
 
 ## Repository Structure

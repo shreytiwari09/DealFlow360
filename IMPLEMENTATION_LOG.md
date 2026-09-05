@@ -1099,3 +1099,101 @@ blocked on anomaly thresholds still being undefined, needs a decision before it 
 (2) Reporting with filters + PDF/XLS export; (3) Admin config screens for discount tiers and
 approval chains (Screen 18) — the data is already configurable via the API, only the UI is
 missing; (4) Product catalogue screens (16-17), manual warehouse override UI, nudges/escalations.
+
+---
+
+## 2026-09-06 — Move Postgres Off Docker, Onto the Local Machine
+
+### Goal
+User asked to stop running Postgres as a Docker service and connect the app to PostgreSQL
+installed directly on their machine instead, with the explicit instruction that the database
+should live there and nowhere else.
+
+### Implemented
+Found the local install first rather than guessing: PostgreSQL 18, running as a Windows
+service, listening on **port 5433** (not the default 5432 — that port was already taken by
+the project's own Dockerized Postgres, still running from the previous session).
+`listen_addresses = '*'` was already set; `pg_hba.conf` only allowed `127.0.0.1`/`::1`.
+
+Created a dedicated `dealflow` role (least-privilege, not the `postgres` superuser) with a
+freshly generated password, and a `dealflow360` database owned by it — using the `postgres`
+superuser credentials the user provided for this one-time setup step only.
+
+**The `pg_hba.conf` restriction turned out not to matter.** Tested directly with `docker run
+--rm postgres:16-alpine psql -h host.docker.internal ...` before touching any config: the
+connection reached the password-check stage rather than being rejected at the network layer,
+and `inet_server_addr()` reported `127.0.0.1` from inside the query — Docker Desktop's
+`host.docker.internal` proxy makes the connection appear to Postgres as a plain loopback
+connection, which the existing `127.0.0.1/32` rule already permits. No `pg_hba.conf` or
+`listen_addresses` edit was needed at all, avoiding a config change to the user's local
+Postgres that would have been easy to forget about later.
+
+Updated `.env` (`POSTGRES_HOST=host.docker.internal`, `POSTGRES_PORT=5433`,
+`POSTGRES_USER=dealflow`, fresh password, `POSTGRES_DB=dealflow360`) and rewrote
+`docker-compose.yml` to remove the `db` service and `pgdata` volume entirely, and to remove
+the backend service's hardcoded `POSTGRES_HOST: db` / `POSTGRES_PORT: 5432` environment
+overrides that would otherwise have silently ignored whatever `.env` said. Stopped (not
+removed) the old Dockerized Postgres container as a safety net rather than deleting its
+volume outright.
+
+Ran `alembic upgrade head` and `python -m app.seed` against the new, empty `dealflow360`
+database, then brought the full stack up and re-ran every verification artifact this project
+has accumulated, specifically because a database swap is exactly the kind of change that
+looks fine at the health-check level while quietly being wrong underneath.
+
+Updated `.env.example`, `docker-compose.yml`'s header comment, `README.md` (quick-start,
+services table, common commands, troubleshooting — the "no PostgreSQL install needed" claim
+is now false and was corrected), and `PROJECT_CONTEXT.md`.
+
+### Files Changed
+- `.env` (not committed — gitignored)
+- `.env.example`
+- `docker-compose.yml` (`db` service and `pgdata` volume removed; backend env override removed)
+- `README.md` (Quick Start, Services table, Common commands, Troubleshooting)
+- `PROJECT_CONTEXT.md`, `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+- Decision: verify the actual Docker-Desktop-to-host connection behavior empirically (a
+  disposable `docker run` probe) before editing any Postgres configuration.
+- Reason: assuming `pg_hba.conf` needed a new rule (the usual case on native Linux Docker)
+  would have meant editing the user's local Postgres's security configuration unnecessarily.
+  The probe took thirty seconds and turned a config change into a non-issue.
+
+- Decision: stop the old Dockerized Postgres container rather than deleting it or its volume.
+- Reason: it is unneeded now, but destroying it is irreversible and the user had not been
+  asked whether they wanted the demo data preserved a while longer as a fallback. Removing
+  it is a one-line follow-up once they confirm they're satisfied with the new setup.
+
+### Validation
+- **197 backend tests pass** against the new database, run inside the container exactly as
+  before — the app itself required zero code changes, since `POSTGRES_HOST`/`PORT`/`USER`/
+  `PASSWORD`/`DB` were already plain environment settings with no assumption baked in about
+  where Postgres runs.
+- Health check: `{"status":"ok","environment":"development","database":"ok"}`.
+- Re-ran all three live-API scripts from the previous two sessions (billing, portal, upsell)
+  unchanged against the freshly seeded local database: **78/78 checks pass** (40 + 29 + 9).
+- Confirmed via `\dt` that the database was genuinely empty before migrating, and confirmed
+  the `dealflow` role can connect and query directly with `psql`, independent of Docker.
+
+### Known Issues
+- The old Dockerized Postgres container (`dealflow360-db-1`) is stopped, not removed, and
+  its volume still holds the previous session's demo data. Safe to remove
+  (`docker rm dealflow360-db-1 && docker volume rm dealflow360_pgdata`) once confirmed the
+  new setup is working as expected long-term.
+- `README.md`'s repository-layout tree still lists an outdated file/screen inventory from
+  several sessions ago (predates fulfillment, billing, portal, upsell) — a pre-existing
+  staleness this entry did not fully resolve, only the Postgres-specific claims in it.
+- Native Linux Docker users (not this project's dev machine) will need the
+  `extra_hosts`/`pg_hba.conf` handling this session's Windows machine did not — noted in
+  `docker-compose.yml`'s header comment but not implemented or tested.
+
+### Current State
+The full stack (backend + frontend, both still in Docker) runs against PostgreSQL installed
+directly on the host machine. No application code changed; only `.env`, `docker-compose.yml`,
+and documentation. Every existing test and live-verification script passes unchanged against
+the new database.
+
+### Next Recommended Step
+Complete the remaining 🟡 Supporting scope (PROJECT_CONTEXT.md's "Remaining Work"), per the
+user's explicit request to continue: deal health dashboard (needs anomaly-threshold decisions
+first), reporting + export, admin config screens, product catalogue screens.

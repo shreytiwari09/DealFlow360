@@ -238,6 +238,79 @@ class ApprovalDecisionRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+# --- Fulfillment (PRD B6, FRONTEND.md Screens 7-8) --------------------------
+
+
+class StockLevelResponse(BaseModel):
+    """One row of the stock table on Screen 7."""
+
+    warehouse_id: int
+    warehouse_name: str
+    product_id: int
+    product_name: str
+    quantity_on_hand: Decimal
+    quantity_reserved: Decimal
+    available: Decimal
+
+
+class OrderAwaitingFulfillmentResponse(BaseModel):
+    """One row of the "Orders Awaiting Fulfillment" table on Screen 7."""
+
+    quotation_id: int
+    quote_number: str
+    customer_name: str
+    # None when the quotation is confirmed but no split has been generated yet.
+    fulfillment_status: str | None
+    warehouse_names: list[str]
+
+
+class FulfillmentSplitResponse(BaseModel):
+    quotation_line_id: int
+    product_name: str
+    warehouse_id: int
+    warehouse_name: str
+    quantity: Decimal
+    is_manual_override: bool
+
+
+class BackorderResponse(BaseModel):
+    id: int
+    quotation_line_id: int
+    product_name: str
+    quantity_outstanding: Decimal
+    status: str
+    # True once enough stock exists somewhere to consolidate right now - the
+    # frontend's stand-in for PRD B6's "prompt appears automatically", which
+    # needs a background job to be genuinely automatic (see Known Issues).
+    can_consolidate: bool
+
+
+class FulfillmentDetailResponse(BaseModel):
+    id: int
+    quotation_id: int
+    quote_number: str
+    customer_name: str
+    status: str
+    shipment_count: int
+    estimated_shipping_cost: Decimal
+    is_manual_override: bool
+    splits: list[FulfillmentSplitResponse]
+    backorders: list[BackorderResponse]
+    # UX only, mirroring can_edit/can_act elsewhere - the backend re-checks
+    # permission and status on every write regardless of what this says.
+    can_act: bool
+
+
+class OverrideLineRequest(BaseModel):
+    quotation_line_id: int
+    warehouse_id: int
+    quantity: Decimal = Field(gt=0)
+
+
+class OverrideSplitRequest(BaseModel):
+    lines: list[OverrideLineRequest] = Field(min_length=1, max_length=200)
+
+
 # --- Dashboard -------------------------------------------------------------
 
 

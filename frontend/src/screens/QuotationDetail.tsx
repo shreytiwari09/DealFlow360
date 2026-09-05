@@ -192,6 +192,32 @@ export default function QuotationDetail() {
   }
 
   /**
+   * Records that the customer has confirmed, unlocking fulfillment.
+   *
+   * A temporary internal stand-in for the customer's own "Confirm Quotation"
+   * action on the portal negotiation screen (PRD B8), which is not built yet
+   * — see the backend endpoint's docstring. Shown only once a quotation has
+   * cleared approval (or never needed it), matching the states the state
+   * machine allows a direct jump to `confirmed` from.
+   */
+  async function confirmQuotation() {
+    if (!quotation) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await api.post<Quotation>(`/quotations/${quotation.id}/confirm`);
+      setQuotation(updated);
+      navigate(`/fulfillment/${quotation.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not confirm this quotation.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const canConfirm = ["approved", "sent", "under_negotiation"].includes(quotation?.status ?? "");
+
+  /**
    * Upsell suggestions (PRD B5). The seeded rules live server-side; until the
    * rules endpoint exists this surfaces promoted products not already on the
    * quote, which is the same shape of suggestion the panel will show.
@@ -205,7 +231,13 @@ export default function QuotationDetail() {
   if (error && !quotation) return <ErrorState message={error} onRetry={() => void load()} />;
   if (!quotation) return null;
 
-  const editable = quotation.can_edit;
+  // `can_edit` from the backend is permission + ownership only, not status —
+  // it stays true even once a quote is approved/sent/confirmed. The backend
+  // separately rejects a line edit with 409 unless the quotation is actually
+  // draft or rejected, so the UI must apply that same status gate itself, or
+  // it shows live-editable discount fields that would fail the moment you
+  // click away from them.
+  const editable = quotation.can_edit && ["draft", "rejected"].includes(quotation.status);
 
   return (
     <>
@@ -232,6 +264,11 @@ export default function QuotationDetail() {
                   Submit for Approval
                 </button>
               </>
+            )}
+            {canConfirm && (
+              <button className="btn btn--primary" disabled={saving} onClick={() => void confirmQuotation()}>
+                Confirm Quotation
+              </button>
             )}
           </>
         }

@@ -389,6 +389,41 @@ Both demo paths are reachable from this one seed:
 
 These are rows, not constants: an Admin can retune any cell at runtime (PRD A3).
 
+### 7. Fulfillment Trigger Point and Stock Reservation Timing — LOCKED
+
+**Trigger: a warehouse split can only be generated once a quotation reaches `CONFIRMED`
+status.** The PRD contains two slightly different sentences on when fulfillment starts —
+Section 5's overview says "once approved... the system suggests a warehouse fulfillment
+split", while the Complete Flow section says "once confirmed, the order proceeds to
+fulfillment and billing." These read as in tension. Resolved in favour of `CONFIRMED`,
+because that is what the Phase 2 state machine was actually built around: `CONFIRMED` is
+the sole legal predecessor of `FULFILLED` (`APPROVED → CONFIRMED → FULFILLED` and
+`SENT → CONFIRMED → FULFILLED` are the only paths there), so treating `APPROVED` as the
+trigger would mean generating a fulfillment for a quotation with no legal route to ever
+finish one.
+
+**Consequence:** since the customer portal negotiation screen (backlog item 2, not yet
+built) is what would normally call this transition, a small internal stand-in exists —
+`POST /quotations/{id}/confirm` — moving `approved`/`sent`/`under_negotiation` →
+`confirmed`. Deliberately **not** restricted to the owning rep: "the customer confirmed on
+a call" is not something only the original rep witnessed. **This endpoint is temporary**
+and should be retired or restricted to Admin once the real portal action exists.
+
+**Reservation happens at generation, not at "accept".** `SELECT ... FOR UPDATE` locks and
+reserves stock (`quantity_reserved += allocation`) the moment a split is *computed*, inside
+the same transaction. A design that reserved only on accept would leave a window between
+"here is what we can offer" and "we actually hold it," during which a second confirmation
+could be offered the same nominally-available units. "Accept" is therefore a pure status
+transition — no stock movement — and "Manual Override" releases the old reservation and
+re-reserves the new one atomically within one transaction, never leaving stock momentarily
+un-reserved where a concurrent reader could see it.
+
+**Consolidating a backorder is a manual action, not yet the automatic prompt PRD B6
+describes** ("a prompt appears automatically" once stock arrives). The manual endpoint
+(`POST .../backorders/{id}/consolidate`) is what that prompt would call; nothing currently
+watches for restocks and surfaces the prompt unprompted — that needs a background job,
+tracked in Known Issues.
+
 ## Core Workflows
 1. Rep builds quotation → adds lines → applies discounts (line-level, or order-level distributed onto every line — see Locked Business Rules #4)
 2. Blended risk score computed live across all lines (**formula locked — see Locked Business Rules #1**)
@@ -573,7 +608,7 @@ and ceiling matrix are all locked here.
   and database constraints proven against real PostgreSQL
 - ERD checked in at `docs/erd.md`, all 10 diagrams machine-parsed
 
-**Phase 3 (Core Business Workflow): steps 1-4 and 8 complete.**
+**Phase 3 (Core Business Workflow): steps 1-5 and 8 complete.**
 - Blended risk engine and approval router in `app/services/risk.py` — pure, `Decimal`, 35 tests
 - Idempotent seed data covering RBAC, catalogue, the full ceiling matrix, chains, stock and rules
 - Login for all five roles; Argon2id, JWT with an explicit algorithm allowlist, refresh rotation
@@ -581,16 +616,28 @@ and ceiling matrix are all locked here.
 - Permission-based authorization plus separate resource-ownership checks, all in `api/deps.py`
 - Quotation API with a single recalculation writer for totals, margin and risk
 - Automatic approval routing including the sequential two-step Manager→Finance chain
-- Audit trail on every create, edit, submission, approval, rejection and denial
-- Not yet: warehouse split (step 5), hybrid billing (step 6), portal negotiation (step 7)
+- **Warehouse split + backorders** — greedy fill in `app/services/fulfillment.py` (pure, mirrors
+  `risk.py`'s shape), reserving stock atomically via `SELECT ... FOR UPDATE` at the moment a
+  split is generated, not deferred to "accept". Covers the full PRD B6 surface: auto-suggestion
+  on first view, Accept, Manual Override (with release-then-reserve, still atomic), and
+  Consolidate Remaining Backorder (manually triggered — see Known Issues for the "automatic"
+  half). See Locked Business Rules #7 for the CONFIRMED-status trigger point and the internal
+  `POST /quotations/{id}/confirm` stand-in this required.
+- Audit trail on every create, edit, submission, approval, rejection, fulfillment action and
+  denial
+- Not yet: hybrid billing (step 6), portal negotiation (step 7)
 
-**Phase 8 (Frontend): Screens 1-6 built**, brought forward at the user's request once
-`FRONTEND.md` supplied the design input. Screens 7-18 appear in the sidebar explicitly disabled
+**Phase 8 (Frontend): Screens 1-8 built.** Screens 1-6 brought forward at the user's request once
+`FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment List/Detail) followed
+immediately once their backend existed. Screens 9-18 appear in the sidebar explicitly disabled
 rather than as links to empty pages.
 
-**Verified 2026-09-05:** 124 unit/integration tests plus 56 end-to-end API checks all pass, and
-both demo flows were driven through the real UI headlessly with no runtime errors. `DEMO.md`
-records the expected numbers.
+**Verified 2026-09-06:** 145 unit/integration tests (124 + 21 new fulfillment tests) plus 56 + 51
+end-to-end API checks all pass, and every flow — including Confirm → auto-generated split →
+Accept, Manual Override, and Consolidate-after-restock — was driven through the real UI
+headlessly with no runtime errors. `DEMO.md` records the expected numbers for the flows it
+covers; the fulfillment flow's numbers are recorded in Locked Business Rules #7 and
+IMPLEMENTATION_LOG.md instead, pending a DEMO.md update.
 
 ## Remaining Work
 
@@ -599,16 +646,7 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
 
 ### Next up — finish Phase 3 (Core)
 
-1. **Warehouse split + backorders** (PRD B6, FRONTEND.md Screens 7-8)
-   - Greedy fill ordered by `shipping_cost_weight`, then highest available stock, then lowest
-     `warehouse_id` — that last key is what makes the split deterministic across demo runs
-   - Must read stock with `SELECT ... FOR UPDATE`; two confirmations racing would otherwise
-     double-sell the same units
-   - Seed already stages it: Laptop is 6 in Main + 3 in East, so a 10-unit order splits across
-     both AND leaves a backorder of 1
-   - Tables ready: `warehouses`, `stock_levels`, `fulfillments`, `fulfillment_splits`, `backorders`
-
-2. **Hybrid billing + proration** (PRD B7, Screens 9-10, 12-13)
+1. **Hybrid billing + proration** (PRD B7, Screens 9-10, 12-13)
    - Proration is locked (#3): daily basis, `ROUND_HALF_UP` to 2dp, with `Decimal` — never
      Python's built-in `round()`, which is banker's rounding
    - Store every input beside the result in `proration_records`, or a billing dispute is
@@ -619,7 +657,7 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
    - Tables ready: `subscription_plans`, `subscriptions`, `billing_schedules`,
      `proration_records`, `payments`
 
-3. **Customer portal negotiation** (PRD B8, Screen 11)
+2. **Customer portal negotiation** (PRD B8, Screen 11)
    - Needs its own endpoints under `portal.*` permissions — NOT a filtered view of the internal
      list. The portal shell exists and correctly refuses internal screens; only the negotiation
      screen itself is a placeholder
@@ -627,7 +665,7 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
      why decided approvals are terminal in the state machine
    - `under_negotiation` and its transitions are already implemented and tested
 
-4. **Upsell panel wired to `upsell_rules`** (PRD B5)
+3. **Upsell panel wired to `upsell_rules`** (PRD B5)
    - 7 rules are seeded. The builder currently shows promoted products as a stand-in; it needs
      the real co-purchase lookup, the margin-delta figure and the `Dismiss` action
 
@@ -643,9 +681,14 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
 
 - **Order-level discount UI** — the endpoint works and is tested; the builder has no button yet,
   and it needs the overwrite warning required by Locked Business Rules #4
-- **HttpOnly cookie auth** — the refresh token currently lives in `localStorage`.
+- **HttpOnly cookie auth** — the refresh token currently lives in `sessionStorage` (moved off
+  `localStorage` after a real cross-tab session bug — see IMPLEMENTATION_LOG.md 2026-09-05).
   SECURITY_SPEC Section 7 prefers cookies and that remains the right end state; it needs CSRF
   handling and a same-site story the split localhost origins do not currently allow
+- **Fully-automatic backorder consolidation** — PRD B6's "prompt appears automatically" needs a
+  background job watching for restocks. What exists now (`POST
+  /fulfillment/{id}/backorders/{id}/consolidate`) is the manual trigger that prompt would call;
+  an ops/finance user has to check and click it themselves rather than being notified
 - **Restricting public signup** — signup grants an empty internal workspace to anyone. Acceptable
   for a hackathon, wrong for production; belongs in the "what we'd build next" deliverable
 - Bonus scope (multi-currency, multi-company) — untouched, correctly
@@ -665,6 +708,16 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
   the blended score exists to close
 - **Proration uses `Decimal` + explicit `ROUND_HALF_UP`.** Never `float`, never Python's
   built-in `round()`, which is banker's rounding and gives different answers
+- **Stock is reserved at fulfillment GENERATION, not at accept.** See Locked Business Rules
+  #7. Moving the `quantity_reserved` write to "accept" would reopen the double-sell window
+  the `SELECT ... FOR UPDATE` locking exists to close
+- **Any ORM object returned from a service function that was populated via bare
+  `session.add(...)` (not `parent.children.append(...)`) must have its collection
+  relationships explicitly `session.refresh(...)`'d before return.** This is not
+  hypothetical — it caused two real bugs in this codebase (`auth.py`'s `_USER_LOADS`, and
+  `generate_fulfillment`'s missing refresh, both `MissingGreenlet` under async). The API
+  layer papering over it by re-querying afterward is not a substitute for fixing it at the
+  source; a future caller that doesn't happen to re-query will hit it again
 - Server-side role + resource-ownership enforcement — never move checks to frontend-only
 - State machine transition rules — do not allow invalid transitions to pass silently
 - `POSTGRES_PASSWORD` / `JWT_SECRET_KEY` must stay required settings with no in-code default

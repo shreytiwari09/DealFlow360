@@ -5,16 +5,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { NoteBar } from "../components/ui";
 
-// Seeded demo accounts. Dev fixtures only — the same list the seed prints.
-const DEMO_ACCOUNTS = [
-  { email: "rep@dealflow360.example", role: "Sales Rep" },
-  { email: "manager@dealflow360.example", role: "Sales Manager" },
-  { email: "finance@dealflow360.example", role: "Finance / Ops" },
-  { email: "admin@dealflow360.example", role: "Admin" },
-  { email: "portal@acme.example", role: "Customer (portal)" },
-];
-const DEMO_PASSWORD = "DealFlow360!demo";
-
 export default function Login() {
   const { signIn } = useAuth();
   const navigate = useNavigate();
@@ -76,26 +66,6 @@ export default function Login() {
             {busy ? "Signing in…" : "Log In"}
           </button>
         </form>
-
-        <div className="login__accounts">
-          <div className="field__label" style={{ marginBottom: "var(--space-2)" }}>
-            Demo accounts — click to fill
-          </div>
-          {DEMO_ACCOUNTS.map((account) => (
-            <button
-              key={account.email}
-              type="button"
-              className="login__account"
-              onClick={() => {
-                setEmail(account.email);
-                setPassword(DEMO_PASSWORD);
-              }}
-            >
-              <span>{account.role}</span>
-              <span>{account.email}</span>
-            </button>
-          ))}
-        </div>
 
         <div style={{ marginTop: "var(--space-4)" }}>
           <NoteBar>

@@ -19,6 +19,8 @@ import QuotationsList from "./screens/QuotationsList";
 import QuotationDetail from "./screens/QuotationDetail";
 import ApprovalsList from "./screens/ApprovalsList";
 import ApprovalDetail from "./screens/ApprovalDetail";
+import FulfillmentList from "./screens/FulfillmentList";
+import FulfillmentDetail from "./screens/FulfillmentDetail";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -72,6 +74,8 @@ export default function App() {
             <Route path="/quotations/:id" element={<QuotationDetail />} />
             <Route path="/approvals" element={<ApprovalsList />} />
             <Route path="/approvals/:id" element={<ApprovalDetail />} />
+            <Route path="/fulfillment" element={<FulfillmentList />} />
+            <Route path="/fulfillment/:id" element={<FulfillmentDetail />} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

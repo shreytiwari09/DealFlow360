@@ -303,3 +303,173 @@ Continue Phase 3 in PLAN.md §8 order:
 2. **Permission dependencies** in `app/api/deps.py` — `require_permission(...)` plus resource-ownership checks, so authorization lives in exactly one place.
 3. **Quotation builder endpoints** — CRUD with live totals, margin and risk score computed through `assess_lines()`.
 4. **Approval routing endpoints** — persisting `ApprovalRequest` and its steps from `plan_approval_steps()`.
+
+---
+
+## 2026-09-06 — Warehouse Split, Backorders and Fulfillment (Phase 3 step 5)
+
+### Goal
+Continue Phase 3 from PROJECT_CONTEXT.md's ordered backlog: multi-warehouse fulfillment
+splitting and backorder handling (PRD B6, FRONTEND.md Screens 7-8), the next item after the
+demo-prep detour. Also removed the demo-only click-to-fill login buttons per the user's
+request, now that the interview demo phase is done and normal development resumes.
+
+### Implemented
+
+**Locked decision, recorded before writing code (PLAN.md §0.6):** a warehouse split can only
+be generated once a quotation is `CONFIRMED`. The PRD has two slightly different sentences on
+when fulfillment starts ("once approved..." vs "once confirmed..."); resolved in favour of
+`CONFIRMED` because that is what the Phase 2 state machine was actually built around —
+`CONFIRMED` is the sole legal predecessor of `FULFILLED`. Since the customer portal
+negotiation screen (the real source of a "confirmed" quotation) is not built yet, a small
+internal `POST /quotations/{id}/confirm` stand-in was added, explicitly documented as
+temporary and to be retired once the portal exists.
+
+**`app/services/fulfillment.py`** — mirrors `risk.py`'s shape:
+- `compute_split()` — pure, no I/O. Greedy fill: lowest shipping-cost weight first, then
+  highest available stock, then lowest warehouse id as a final deterministic tiebreak (the
+  locked warehouse-selection rule from earlier in the backlog).
+- `generate_fulfillment()` — locks every stock row for a product with `SELECT ... FOR UPDATE`
+  (ordered by warehouse id, to give every caller the same lock order and avoid deadlocks),
+  computes the split, and **reserves stock immediately in the same transaction** — not
+  deferred to "accept". A line whose product has no `stock_levels` rows at all (a Service or
+  Subscription) is skipped entirely, needing no warehouse.
+- `accept_fulfillment()` — a pure status transition (no stock movement, since reservation
+  already happened). Resolves to `FULFILLED` (no open backorder), `BACKORDERED` (nothing
+  allocated), or `PARTIALLY_FULFILLED` in between, and only advances the quotation itself to
+  `FULFILLED` once the fulfillment is fully covered.
+- `override_fulfillment()` — releases every reservation on the touched lines, then re-reserves
+  per the caller's chosen distribution, inside one transaction so no concurrent reader can
+  observe stock in the gap between release and re-reserve. Validates against live stock under
+  lock, so an override cannot itself oversell.
+- `consolidate_backorder()` — PRD B6's "Consolidate Remaining Backorder" action. All-or-
+  nothing: a partial restock that cannot fully cover the backorder leaves it open rather than
+  silently shrinking `quantity_outstanding`.
+
+**Endpoints** (`app/api/v1/endpoints/fulfillment.py`): `GET /fulfillment` (stock table +
+orders awaiting fulfillment), `GET /fulfillment/{quotation_id}` (auto-generates the suggested
+split on first view — no separate "compute" action to remember), `POST .../accept`,
+`POST .../override`, `POST .../backorders/{id}/consolidate`. Gated by the existing
+`fulfillment.manage` permission, already seeded to Finance/Ops in Phase 3 part 1.
+
+**Frontend:** Screens 7 (`FulfillmentList.tsx`) and 8 (`FulfillmentDetail.tsx`) per
+FRONTEND.md — stock table, orders-awaiting table, warehouse split table, Accept/Manual
+Override actions (override renders an editable per-line, per-warehouse table populated from
+live availability), backorders section with a Consolidate action. Added a "Confirm
+Quotation" button to the builder so the whole chain is reachable by clicking, not just via
+curl. Enabled the "Fulfillment" sidebar item (was `pending: true`).
+
+**Removed:** the demo click-to-fill account buttons on the Login screen, per explicit user
+request now that interview-demo prep is done. Plain email/password form remains, matching
+FRONTEND.md Screen 1's actual spec.
+
+**Also fixed while wiring this in:** `QuotationDetail.tsx`'s `editable` flag was permission +
+ownership only, with no status check — a rep would see live-editable discount fields on an
+*approved* quotation, which the backend would then reject with 409 on save. Now also requires
+`status` to be `draft` or `rejected`, matching what the backend actually allows.
+
+### Files Changed
+- `backend/app/services/fulfillment.py` (new)
+- `backend/app/api/v1/endpoints/fulfillment.py` (new)
+- `backend/app/api/v1/endpoints/quotations.py` (added `POST /{id}/confirm`)
+- `backend/app/api/v1/router.py` (wired the new router)
+- `backend/app/models/audit.py` (four new `AuditAction` constants; two already existed)
+- `backend/app/schemas/api.py` (fulfillment DTOs)
+- `backend/tests/test_fulfillment.py` (new — 21 tests)
+- `frontend/src/screens/FulfillmentList.tsx`, `FulfillmentDetail.tsx` (new)
+- `frontend/src/screens/QuotationDetail.tsx` (Confirm button; `editable` status gate)
+- `frontend/src/screens/Login.tsx` (demo buttons removed)
+- `frontend/src/layouts/InternalShell.tsx`, `App.tsx` (Fulfillment routes/nav enabled)
+- `frontend/src/lib/api.ts` (fulfillment types)
+- `PROJECT_CONTEXT.md`, `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+- Decision: fulfillment trigger is `CONFIRMED`, not `APPROVED`, with a temporary internal
+  confirm endpoint bridging the gap until the customer portal exists.
+- Reason: `CONFIRMED` is the state machine's actual sole predecessor of `FULFILLED`; treating
+  `APPROVED` as the trigger would generate fulfillments for quotations with no legal route to
+  ever finish one.
+
+- Decision: reserve stock at split *generation*, not at *accept*.
+- Reason: a suggestion that only reserves on accept leaves a window where a second
+  confirmation could be offered the same nominally-available stock. Locking and reserving in
+  the same transaction as the computation is what makes the suggestion actually binding.
+
+- Decision: a non-stocked product line (no `stock_levels` rows at all) is silently skipped by
+  the split algorithm rather than erroring.
+- Reason: Services and Subscriptions have nothing physical to ship; forcing them through
+  warehouse logic would be modelling something that isn't there.
+
+### Validation
+- Tests: **145 backend tests pass** (124 prior + 21 new). Pure-logic coverage: the exact
+  staged demo scenario (10 requested, 6+3 available → split + 1 backorder), shipping-weight
+  ordering overriding raw stock quantity, both tiebreak levels (available stock, then
+  warehouse id) tested independently, zero-candidate and zero-stock backorder cases, exact-
+  match with no backorder, three-warehouse splits, and the shipping-cost estimate function.
+  DB-level coverage: the CONFIRMED-status gate, actual reservation verified against
+  `stock_levels` rows, duplicate-generation rejection, both `accept` outcomes (partially
+  fulfilled vs. fully fulfilled, including that the *quotation* only advances on the latter),
+  non-stocked products, and override's release-then-reserve with an oversell rejection.
+- Lint: `ruff check .` clean, `ruff format --check .` clean. Frontend `tsc --noEmit` clean.
+- Manual verification, against real seeded PostgreSQL (not assumed): two rounds of hand-
+  written verification scripts (86 checks total, separate from the pytest suite) driving the
+  actual HTTP API — reproducing the seed's own staged numbers exactly (Laptop: 6 from Main +
+  3 from East + 1 backordered), confirming the reservation is real (`quantity_reserved`
+  visible in the stock table afterward), idempotent viewing (second view doesn't duplicate),
+  permission gating (rep 403, Finance 200), a fully-covered order going straight to
+  `fulfilled`, the not-yet-confirmed 409 guard, backorder consolidation after a simulated
+  restock, manual override redistributing correctly, and override rejecting an oversell
+  attempt with a clear error rather than silently succeeding.
+- Manual verification through the real UI, headlessly: signed in as the rep, built a 10-unit
+  compliant order (discount 0%, skips approval), clicked Submit, clicked Confirm, and the
+  Fulfillment Detail screen auto-generated and displayed exactly "Main Warehouse ... 6 units",
+  "East Depot ... 3 units", and a "1.00 pt" open backorder — with no runtime errors. Then
+  signed in as Finance in a second run, opened the same order, clicked "Accept Suggested
+  Split", and the status badge correctly updated to "Partially Fulfilled".
+
+**Two real bugs found and fixed during this work, both the same failure class:**
+1. `consolidate_backorder()` set `backorder.status` directly without validating the
+   transition through `assert_transition()`, unlike every other status change in the
+   codebase. Not a live bug (both transitions it used are legal), but an unguarded one — the
+   entire point of `state_machine.py` is that invalid transitions are *rejected*, not merely
+   unused by accident. Fixed to call `assert_transition("Backorder", ...)` explicitly for
+   both the `OPEN → CONSOLIDATED` and `CONSOLIDATED → FULFILLED` hops.
+2. `generate_fulfillment()` returned its `Fulfillment` object without refreshing its
+   `splits`/`backorders` relationship collections. Every split/backorder was added via bare
+   `session.add(...)`, not `fulfillment.splits.append(...)`, so the in-memory collection
+   stayed empty until something re-queried it. The API endpoints always called
+   `load_fulfillment()` again afterward and never noticed; the new pytest tests, calling
+   `generate_fulfillment()` directly, hit `MissingGreenlet` immediately on the very first
+   attempt to read `.splits`. This is the exact same failure class as the `auth.py`
+   `_USER_LOADS` bug from Phase 3 part 1 — fixed the same way, with an explicit
+   `session.refresh(fulfillment, attribute_names=["splits", "backorders"])` before return,
+   and written up in "Do Not Change" as a standing rule for any future service function of
+   this shape.
+
+### Known Issues
+- **Consolidating a backorder is a manual action**, not the automatic "prompt appears" PRD B6
+  describes. The manual endpoint is what that prompt would call; nothing yet watches for a
+  restock and surfaces it unprompted — needs a background job, not built.
+- **`DEMO.md` does not yet cover this flow.** It still only documents the two approval-routing
+  flows from Phase 3 part 1. The fulfillment flow's exact expected numbers are recorded here
+  and in Locked Business Rules #7 instead; `DEMO.md` should be extended before the next demo
+  that needs to show it.
+- The internal `POST /quotations/{id}/confirm` endpoint is a deliberate, temporary stand-in —
+  see Locked Business Rules #7. It should be retired or restricted once the customer portal
+  negotiation screen exists.
+- `estimated_shipping_cost` is a simple `quantity × shipping_cost_weight` proxy, not a real
+  costing model — the PRD never specifies one, and weight is defined only as what drives the
+  split, not a currency figure.
+
+### Current State
+Phase 3 steps 1-5 and 8 are complete. A rep can build a compliant quotation, submit it
+(skipping approval when nothing breaches a limit), confirm it, and see a warehouse split
+suggestion appear automatically — split across warehouses correctly, backordering whatever's
+left, with Finance able to accept, manually override, or consolidate a backorder once stock
+arrives — all verified against the real database and the real UI, not assumed.
+
+### Next Recommended Step
+**Hybrid billing + proration** (PRD B7, backlog item 1). One prerequisite noted previously
+still stands: `quotation_lines` requires a subscription line to carry a plan, but the builder
+has no plan picker yet, so a subscription product cannot currently be added to a quote — that
+gap needs closing before proration logic has anything to operate on.

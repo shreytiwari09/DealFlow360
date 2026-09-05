@@ -280,6 +280,61 @@ export interface ApprovalDetail extends ApprovalSummary {
   can_act: boolean;
 }
 
+export interface StockLevel {
+  warehouse_id: number;
+  warehouse_name: string;
+  product_id: number;
+  product_name: string;
+  quantity_on_hand: string;
+  quantity_reserved: string;
+  available: string;
+}
+
+export interface OrderAwaitingFulfillment {
+  quotation_id: number;
+  quote_number: string;
+  customer_name: string;
+  fulfillment_status: string | null;
+  warehouse_names: string[];
+}
+
+export interface FulfillmentOverview {
+  stock: StockLevel[];
+  orders: OrderAwaitingFulfillment[];
+}
+
+export interface FulfillmentSplit {
+  quotation_line_id: number;
+  product_name: string;
+  warehouse_id: number;
+  warehouse_name: string;
+  quantity: string;
+  is_manual_override: boolean;
+}
+
+export interface Backorder {
+  id: number;
+  quotation_line_id: number;
+  product_name: string;
+  quantity_outstanding: string;
+  status: string;
+  can_consolidate: boolean;
+}
+
+export interface FulfillmentDetail {
+  id: number;
+  quotation_id: number;
+  quote_number: string;
+  customer_name: string;
+  status: string;
+  shipment_count: number;
+  estimated_shipping_cost: string;
+  is_manual_override: boolean;
+  splits: FulfillmentSplit[];
+  backorders: Backorder[];
+  can_act: boolean;
+}
+
 export interface DashboardSummary {
   pending_approvals: number;
   open_quotations: number;

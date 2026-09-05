@@ -408,3 +408,49 @@ async def submit_for_approval(
 @router.get("/meta/next-number", response_model=dict[str, str])
 async def peek_next_number(session: SessionDep, user: CurrentUser) -> dict[str, str]:
     return {"quote_number": await next_quote_number(session)}
+
+
+@router.post("/{quotation_id}/confirm", response_model=QuotationResponse)
+async def confirm_quotation(
+    request: Request, quotation_id: int, session: SessionDep, user: CurrentUser
+) -> QuotationResponse:
+    """Move a quotation to `confirmed`, unlocking fulfillment.
+
+    This is a deliberate, temporary stand-in. PRD B8 gives the CUSTOMER the
+    "Confirm Quotation" action on the portal negotiation screen, which is not
+    built yet (PROJECT_CONTEXT.md backlog item 3). Until it exists, an
+    internal user records that the customer has confirmed by some other
+    channel (a call, an email) and this endpoint performs the same state
+    transition the portal button will eventually call. It is intentionally
+    NOT restricted to the owning rep only - any internal user who can view
+    the quotation may record a confirmation, since "the customer said yes on
+    a call" is not something only the original rep witnesses.
+
+    Superseded once the portal screen exists: at that point the customer's
+    own action becomes the only path to `confirmed` for non-customer-facing
+    exceptions, and this endpoint can be retired or restricted to Admin.
+    """
+    quotation = await load_quotation(session, quotation_id)
+    if quotation is None:
+        raise _NOT_FOUND
+    await assert_can_view_quotation(request, session, user, quotation)
+
+    try:
+        assert_transition("Quotation", QuotationStatus(quotation.status), QuotationStatus.CONFIRMED)
+    except InvalidStateTransition as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    quotation.status = QuotationStatus.CONFIRMED
+    quotation.last_activity_at = datetime.now(UTC)
+
+    await audit.record(
+        session,
+        action=AuditAction.QUOTATION_STATUS_CHANGED,
+        user_id=user.id,
+        resource="quotation",
+        resource_id=quotation.id,
+        reason="confirmed (internal stand-in for customer portal confirmation)",
+        request=request,
+    )
+    await session.commit()
+    return _detail(await load_quotation(session, quotation.id), user)

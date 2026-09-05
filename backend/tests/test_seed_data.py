@@ -240,7 +240,7 @@ async def test_portal_user_is_scoped_to_a_customer(db_session: AsyncSession) -> 
     """A portal login without customer_id could see nothing - or, worse, a
     later change could make it see everything. This is the ownership anchor."""
     portal_user = (
-        await db_session.execute(select(User).where(User.email == "portal@acme.test"))
+        await db_session.execute(select(User).where(User.email == "portal@acme.example"))
     ).scalar_one()
 
     assert portal_user.customer_id is not None

@@ -9,6 +9,7 @@ single place that guarantees the metadata is complete.
 from app.db.base import ArchivableMixin, AuditMixin, Base, IdMixin, TimestampMixin
 from app.models.approval import ApprovalRequest, ApprovalStep
 from app.models.audit import AuditAction, AuditLog
+from app.models.auth import RefreshToken
 from app.models.billing import (
     BillingSchedule,
     Payment,
@@ -66,6 +67,7 @@ __all__ = [
     # Approvals
     "ApprovalRequest",
     "ApprovalStep",
+    "RefreshToken",
     # Inventory and fulfillment
     "Backorder",
     "Fulfillment",

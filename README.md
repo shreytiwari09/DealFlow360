@@ -15,8 +15,8 @@ SQLAlchemy 2 (async) + Alembic · Docker Compose.
 
 ### Demo logins
 
-Run the seed, then use `admin@`, `manager@`, `rep@` or `finance@dealflow360.test`,
-or `portal@acme.test`, all with password `DealFlow360!demo`. These are dev-only
+Run the seed, then use `admin@`, `manager@`, `rep@` or `finance@dealflow360.example`,
+or `portal@acme.example`, all with password `DealFlow360!demo`. These are dev-only
 fixtures — override with `SEED_DEFAULT_PASSWORD`. Login endpoints are not built
 yet; the accounts exist ready for them.
 

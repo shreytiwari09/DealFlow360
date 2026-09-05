@@ -163,13 +163,13 @@ async def _seed_users(
     password_hash = hash_password(DEFAULT_PASSWORD)
 
     specs: list[tuple[str, str, RoleCode, int | None]] = [
-        ("admin@dealflow360.test", "Ana Admin", RoleCode.ADMIN, None),
-        ("manager@dealflow360.test", "Maya Manager", RoleCode.SALES_MANAGER, None),
-        ("rep@dealflow360.test", "Raj Rep", RoleCode.SALES_REP, None),
-        ("finance@dealflow360.test", "Fiona Finance", RoleCode.FINANCE_OPS, None),
+        ("admin@dealflow360.example", "Ana Admin", RoleCode.ADMIN, None),
+        ("manager@dealflow360.example", "Maya Manager", RoleCode.SALES_MANAGER, None),
+        ("rep@dealflow360.example", "Raj Rep", RoleCode.SALES_REP, None),
+        ("finance@dealflow360.example", "Fiona Finance", RoleCode.FINANCE_OPS, None),
         # The portal user. customer_id is what scopes them to Acme's quotations
         # and nothing else; it is set here because signup can never set it.
-        ("portal@acme.test", "Cara Customer", RoleCode.CUSTOMER, acme.id),
+        ("portal@acme.example", "Cara Customer", RoleCode.CUSTOMER, acme.id),
     ]
 
     users: dict[str, User] = {}
@@ -188,10 +188,10 @@ async def _seed_users(
         session,
         SalesTeam,
         {"name": "North Sales Team"},
-        manager_id=users["manager@dealflow360.test"].id,
+        manager_id=users["manager@dealflow360.example"].id,
     )
-    users["rep@dealflow360.test"].sales_team_id = team.id
-    users["manager@dealflow360.test"].sales_team_id = team.id
+    users["rep@dealflow360.example"].sales_team_id = team.id
+    users["manager@dealflow360.example"].sales_team_id = team.id
 
     await session.flush()
     return users
@@ -214,7 +214,7 @@ async def _seed_customers(session: AsyncSession) -> dict[str, Customer]:
             {"code": code},
             name=name,
             tier=tier,
-            email=f"accounts@{code.lower()}.test",
+            email=f"accounts@{code.lower()}.example",
             currency="INR",
         )
     return customers
@@ -550,11 +550,11 @@ async def seed() -> None:
     print()
     print("  Logins (all share the same password):")
     for email in (
-        "admin@dealflow360.test",
-        "manager@dealflow360.test",
-        "rep@dealflow360.test",
-        "finance@dealflow360.test",
-        "portal@acme.test",
+        "admin@dealflow360.example",
+        "manager@dealflow360.example",
+        "rep@dealflow360.example",
+        "finance@dealflow360.example",
+        "portal@acme.example",
     ):
         print(f"    {email}")
     print(f"  Password: {DEFAULT_PASSWORD}   (dev only - override SEED_DEFAULT_PASSWORD)")

@@ -19,11 +19,21 @@ from sqlalchemy.orm import selectinload
 from app.core.security import hash_password, needs_rehash, verify_password
 from app.core.tokens import TokenError, create_access_token, create_refresh_token, decode_token
 from app.models.auth import RefreshToken
+from app.models.enums import RoleCode
 from app.models.rbac import Role, User
 
 
 class AuthError(Exception):
     """Authentication failed. Intentionally carries no detail."""
+
+
+class SignupError(Exception):
+    """Registration could not proceed. Unlike `AuthError`, this DOES carry a
+    detail — a duplicate-email conflict on signup is normal, expected UX
+    (SECURITY_SPEC.md's user-enumeration concern is about *login* telling an
+    attacker which emails have accounts; a signup form telling the person
+    who just typed their own email that it's already registered is not the
+    same threat model, and every real registration form does this)."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +79,43 @@ async def _issue_pair(session: AsyncSession, user: User) -> TokenPair:
         access_token=create_access_token(user.id),
         refresh_token=refresh_token,
     )
+
+
+async def signup(
+    session: AsyncSession, *, email: str, password: str, full_name: str
+) -> tuple[User, TokenPair]:
+    """PRD A1 ("Internal users can sign up and log in") and Locked Business
+    Rules #5: always creates a Sales Rep, never a portal account (there is no
+    `customer_id` to set here — portal accounts remain Admin-created only,
+    which is the correct outcome: self-signup must never be able to attach
+    itself to an existing customer's quotations).
+
+    Auto-issues a token pair on success, matching `authenticate()`'s shape,
+    so "sign up" and "log in" are one action from the caller's side — the PRD
+    lists them as alternatives ("signs up (first time) or logs in"), not as
+    two separate steps a new user has to perform back to back.
+    """
+    normalised = email.strip().lower()
+    existing = (
+        await session.execute(select(User).where(User.email == normalised))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise SignupError("An account with this email already exists.")
+
+    role = (await session.execute(select(Role).where(Role.code == RoleCode.SALES_REP))).scalar_one()
+
+    user = User(
+        email=normalised,
+        password_hash=hash_password(password),
+        full_name=full_name.strip(),
+        role_id=role.id,
+    )
+    session.add(user)
+    await session.flush()
+
+    loaded = await _load_user(session, user.id)
+    assert loaded is not None  # just inserted in this same transaction
+    return loaded, await _issue_pair(session, loaded)
 
 
 async def authenticate(session: AsyncSession, email: str, password: str) -> tuple[User, TokenPair]:

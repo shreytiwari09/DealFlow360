@@ -16,13 +16,37 @@ const V1 = `${API_BASE_URL}/api/v1`;
  * Tokens live in memory, with the refresh token mirrored to sessionStorage so
  * a page reload does not log the user out.
  *
- * sessionStorage, not localStorage. localStorage is shared across every tab
- * of the same browser, so two tabs signed in as different users (exactly the
- * "rep in one window, manager in another" setup this app's own demo script
- * asks for) fight over one stored session: whichever tab last touched
- * storage silently evicts the other's login. sessionStorage is per-tab, so
- * each tab keeps its own identity independent of what any other tab does,
- * while still surviving a reload of that same tab.
+ * sessionStorage, not localStorage, as the per-tab SOURCE OF TRUTH. localStorage
+ * is shared across every tab of the same browser, so two tabs signed in as
+ * different users (exactly the "rep in one window, manager in another" setup
+ * this app's own demo script asks for) would otherwise fight over one stored
+ * session: whichever tab last touched storage silently evicts the other's
+ * login. sessionStorage is per-tab, so each tab keeps its own identity
+ * independent of what any other tab does, while still surviving a reload of
+ * that same tab.
+ *
+ * BUT sessionStorage alone breaks a real workflow: a brand-new tab (a deep
+ * link opened from Slack/email, a bookmark, ctrl-click, or pasting a URL)
+ * starts with EMPTY sessionStorage no matter how logged-in the user is
+ * elsewhere in the same browser — that tab bounces straight to /login even
+ * though the user never signed out. localStorage is kept alongside
+ * sessionStorage as a "last known session" bootstrap value purely for this
+ * case: a brand-new tab with nothing of its own falls back to it once, then
+ * behaves exactly like any other tab from that point on (its own
+ * sessionStorage copy, immune to what other tabs do afterward). Explicit
+ * sign-out clears the fallback too, but only if it still points at the
+ * session being signed out of — so one tab signing out can never silently
+ * kill a *different* identity that another, still-open tab is using.
+ *
+ * The bootstrap must only ever happen ONCE per tab, the very first time that
+ * tab asks for a token at all — never again after that, even once this tab's
+ * own copy is later cleared. Without that rule, explicitly signing out in
+ * this tab would immediately re-bootstrap it right back from the shared
+ * fallback if some OTHER identity happened to be sitting there (a manager
+ * still active in a different tab, say) — turning "sign out" into "silently
+ * sign in as someone else," which is worse than the deep-link bug this whole
+ * mechanism exists to fix. `BOOTSTRAPPED_KEY` is the marker for "this tab has
+ * an opinion of its own now, stop asking the shared pool."
  *
  * SECURITY_SPEC.md Section 7 prefers HttpOnly cookies over either Storage
  * mechanism, and that remains the right end state. This is a deliberate,
@@ -31,24 +55,88 @@ const V1 = `${API_BASE_URL}/api/v1`;
  * not currently give us. Tracked in PROJECT_CONTEXT.md Known Issues.
  */
 const REFRESH_KEY = "dealflow.refresh";
+const BOOTSTRAPPED_KEY = "dealflow.bootstrapped";
 
 let accessToken: string | null = null;
 
 export function getRefreshToken(): string | null {
   try {
-    return sessionStorage.getItem(REFRESH_KEY);
+    const ownToken = sessionStorage.getItem(REFRESH_KEY);
+    if (ownToken) return ownToken;
+    // This tab has already had its own identity established (and since
+    // cleared, e.g. by an explicit sign-out) — never re-adopt whatever the
+    // shared pool currently holds, even if it looks like a valid session.
+    if (sessionStorage.getItem(BOOTSTRAPPED_KEY)) return null;
   } catch {
-    return null;
+    /* private browsing or storage disabled — fall through to the shared copy */
   }
+
+  try {
+    const lastKnown = localStorage.getItem(REFRESH_KEY);
+    if (lastKnown) {
+      // Bootstrap this tab from the shared fallback, once. From here on this
+      // tab has its own sessionStorage copy and is independent of whatever
+      // any other tab does next.
+      sessionStorage.setItem(REFRESH_KEY, lastKnown);
+      sessionStorage.setItem(BOOTSTRAPPED_KEY, "1");
+      return lastKnown;
+    }
+  } catch {
+    /* private browsing or storage disabled */
+  }
+  return null;
 }
 
-export function setTokens(access: string | null, refresh: string | null): void {
+/**
+ * `background: true` is the one case that must NOT touch the shared
+ * localStorage fallback: a routine access-token rotation (every ~15 minutes,
+ * silently, in every open tab) is not a new identity becoming active — it is
+ * the SAME identity's token being renewed. Writing it to localStorage
+ * unconditionally would reintroduce exactly the bug sessionStorage was
+ * adopted to fix in the first place, just one layer down: tab A's ordinary
+ * background refresh would silently overwrite tab B's still-active identity
+ * in the shared fallback, so a brand-new tab C opened right after would
+ * bootstrap into A's session instead of B's, purely because of refresh
+ * timing neither tab's user had any control over. An explicit sign-in
+ * (`signIn`/`signUp` in `auth.tsx`) IS a new identity becoming active and
+ * updates the fallback normally; only `refreshAccessToken()`'s own success
+ * path below passes `background: true`.
+ */
+export function setTokens(
+  access: string | null,
+  refresh: string | null,
+  { background = false }: { background?: boolean } = {},
+): void {
   accessToken = access;
+
+  let previousOwnToken: string | null = null;
+  try {
+    previousOwnToken = sessionStorage.getItem(REFRESH_KEY);
+  } catch {
+    /* ignore */
+  }
+
   try {
     if (refresh) sessionStorage.setItem(REFRESH_KEY, refresh);
     else sessionStorage.removeItem(REFRESH_KEY);
+    // From this point on this tab has its own established state (signed in
+    // or explicitly signed out) and must never again silently bootstrap from
+    // the shared fallback — see `getRefreshToken()`'s docstring.
+    sessionStorage.setItem(BOOTSTRAPPED_KEY, "1");
   } catch {
     /* private browsing — the session simply will not survive a reload */
+  }
+
+  if (background) return;
+
+  try {
+    if (refresh) {
+      localStorage.setItem(REFRESH_KEY, refresh);
+    } else if (previousOwnToken && localStorage.getItem(REFRESH_KEY) === previousOwnToken) {
+      localStorage.removeItem(REFRESH_KEY);
+    }
+  } catch {
+    /* private browsing or storage disabled */
   }
 }
 
@@ -90,7 +178,11 @@ async function refreshAccessToken(): Promise<boolean> {
     return false;
   }
   const data = (await response.json()) as TokenResponse;
-  setTokens(data.access_token, data.refresh_token);
+  // background: true - see setTokens's own docstring. This is a routine
+  // rotation of the SAME identity's token, not a new sign-in, and must not
+  // overwrite the shared "last active session" fallback other tabs bootstrap
+  // brand-new tabs from.
+  setTokens(data.access_token, data.refresh_token, { background: true });
   return true;
 }
 

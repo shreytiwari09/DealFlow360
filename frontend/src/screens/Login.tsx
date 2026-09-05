@@ -1,7 +1,7 @@
 /** Screen 1 — Login. FRONTEND.md Section 5. */
 
 import { useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { NoteBar } from "../components/ui";
 
@@ -70,9 +70,13 @@ export default function Login() {
         <div style={{ marginTop: "var(--space-4)" }}>
           <NoteBar>
             Internal users land on the Sales Dashboard; a customer lands in the separate
-            portal. There is no public sign-up — accounts are created by an Admin.
+            portal. Portal (customer) accounts are created by an Admin only.
           </NoteBar>
         </div>
+
+        <p className="muted" style={{ textAlign: "center", marginTop: "var(--space-4)" }}>
+          New here? <Link to="/register">Create a Sales Rep account</Link>
+        </p>
       </div>
     </div>
   );

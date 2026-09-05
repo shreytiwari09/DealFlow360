@@ -379,15 +379,24 @@ Services breach is still caught.
 ### 5. Account Creation — LOCKED
 
 **Public signup exists and always creates a Sales Rep.** `POST /api/v1/auth/signup` assigns
-`sales_rep` unconditionally and **never reads a role from the request body**. Any `role`,
-`role_id`, `customer_id` or privilege field in the payload is ignored, not rejected — this is
-SECURITY_SPEC.md Section 8's mass-assignment case implemented literally ("a profile update
-must not silently allow `{"role": "Admin"}`").
+`sales_rep` unconditionally. There is **no `role`, `role_id` or `customer_id` field on
+`SignupRequest` at all** — SECURITY_SPEC.md Section 8's mass-assignment case ("a profile
+update must not silently allow `{"role": "Admin"}`") is enforced structurally, by the schema
+having nowhere to smuggle a privilege field through, not by an endpoint that reads and
+discards one.
 
-Role changes go through `PATCH /api/v1/admin/users/{id}/role`, which requires the
-`user.manage` permission and writes `ROLE_CHANGED` to `audit_logs`. That endpoint is not extra
-scope — Admin's "user/role management" duty in the PRD role list requires it regardless, so
-signup reuses machinery already being built.
+> **Correction (2026-09-06).** This rule was locked and written up during Phase 1, but the
+> endpoint implementing it was never actually built — `app/api/v1/endpoints/auth.py` carried a
+> docstring claiming the opposite ("deliberately NO signup endpoint"), which was simply wrong,
+> not a later, deliberate reversal. Found when the user reported the frontend had no
+> registration flow at all. Implemented now: `app/services/auth.py`'s `signup()`, auto-issuing
+> a token pair on success so "sign up" and "log in" are one action, matching the PRD's own
+> "signs up (first time) or logs in" framing of them as alternatives.
+
+Role changes going through `PATCH /api/v1/admin/users/{id}/role` (requiring `user.manage`,
+writing `ROLE_CHANGED` to `audit_logs`) remains the plan but **is still not built** — promoting
+a self-registered Sales Rep to another role today means an Admin edits the row directly. Not
+in scope for this pass; tracked in Remaining Work.
 
 This satisfies PRD A1 ("Internal users can sign up and log in") and PRD Section 5's opening
 step ("Sales rep signs up (first time) or logs in") literally, with no privilege-escalation
@@ -873,10 +882,15 @@ these optional) and the items below remain.
 
 ### Deferred deliberately
 
-- **HttpOnly cookie auth** — the refresh token currently lives in `sessionStorage` (moved off
-  `localStorage` after a real cross-tab session bug — see IMPLEMENTATION_LOG.md 2026-09-05).
+- **HttpOnly cookie auth** — the refresh token currently lives in `sessionStorage`, mirrored to
+  `localStorage` purely as a same-browser "last active session" bootstrap for a brand-new tab
+  (see IMPLEMENTATION_LOG.md 2026-09-05 for the original cross-tab bug this design fixes, and
+  2026-09-06 for the deep-link-in-a-new-tab bug the localStorage fallback fixes on top of it).
   SECURITY_SPEC Section 7 prefers cookies and that remains the right end state; it needs CSRF
   handling and a same-site story the split localhost origins do not currently allow
+- **`PATCH /api/v1/admin/users/{id}/role`** — Locked Business Rules #5 always intended this
+  alongside signup (promoting a self-registered Sales Rep to another role); not built this
+  round. An Admin can edit the row directly in the meantime
 - **Fully-automatic backorder consolidation** — PRD B6's "prompt appears automatically" needs a
   background job watching for restocks. What exists now (`POST
   /fulfillment/{id}/backorders/{id}/consolidate`) is the manual trigger that prompt would call;

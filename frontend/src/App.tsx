@@ -15,6 +15,7 @@ import { AuthProvider, useAuth } from "./lib/auth";
 import InternalShell from "./layouts/InternalShell";
 import PortalShell from "./layouts/PortalShell";
 import Login from "./screens/Login";
+import Register from "./screens/Register";
 import Dashboard from "./screens/Dashboard";
 import QuotationsList from "./screens/QuotationsList";
 import QuotationDetail from "./screens/QuotationDetail";
@@ -52,6 +53,7 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginRoute />} />
+          <Route path="/register" element={<Register />} />
           {/* A customer landing on the bare /portal (an old bookmark, or the
               redirect above) goes straight to their list — there is no
               standalone /portal screen of its own. */}

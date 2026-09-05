@@ -30,6 +30,7 @@ class AuditAction:
     the strings in one place so they cannot drift into typos.
     """
 
+    USER_REGISTERED = "USER_REGISTERED"
     LOGIN_SUCCESS = "LOGIN_SUCCESS"
     LOGIN_FAILED = "LOGIN_FAILED"
     LOGOUT = "LOGOUT"

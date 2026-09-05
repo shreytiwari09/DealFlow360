@@ -1335,3 +1335,162 @@ Nothing is blocking. If continuing: (1) a `DEMO.md` pass to add the Phase 5 scre
 script; (2) the consolidation/background-job items above, if genuinely valuable for a demo
 rather than just tidiness; (3) Bonus scope, only if there is time left over per PLAN.md's own
 sequencing rule (🔴 before 🟡 before 🟢).
+
+---
+
+## 2026-09-06 — Implement Real Registration, Verify JWT, Fix Deep-Link Session Bug
+
+### Goal
+Four user-reported items: (1) there is no registration screen, everything is hardcoded via
+seed data — build real signup; (2) validate email format properly; (3) verify the JWT
+implementation actually works, not just reads correctly; (4) a real bug — opening
+`/approvals/76` (or any deep link) "from something else" drops an already-authenticated admin
+back to the login screen.
+
+### Implemented
+
+**1. Signup, for real this time.** Found a genuine documentation/code mismatch while
+investigating: `PROJECT_CONTEXT.md` Locked Business Rules #5 has said since Phase 1 that public
+signup exists and always creates a Sales Rep — but `app/api/v1/endpoints/auth.py`'s own
+docstring said the opposite ("deliberately NO signup endpoint"), and there was in fact no
+`/auth/signup` route at all. The rule was locked and written up; the endpoint implementing it
+was simply never built. Implemented now:
+- `app/services/auth.py`'s `signup()` — always Sales Rep, auto-issues a token pair on success
+  (mirrors `authenticate()`'s shape, so sign-up and log-in are one action, matching the PRD's
+  own "signs up (first time) or logs in" framing as alternatives, not sequential steps).
+- `SignupRequest` has no `role`/`role_id`/`customer_id` field at all — the mass-assignment
+  defense (SECURITY_SPEC.md Section 8) is structural, not a matter of the endpoint remembering
+  to discard one.
+- `POST /auth/signup`, rate-limited tighter than login (5/min vs 10/min — account creation is
+  the more expensive and more abuse-attractive operation).
+- Frontend: `Register.tsx` (a real screen, not a stub), linked from `Login.tsx`, wired into
+  `AuthContext.signUp()`.
+
+**2. Email validation.** Already using Pydantic's `EmailStr` (via `email-validator`) on
+`LoginRequest`; `SignupRequest` uses the same. This is real RFC validation, not a `.`/`@`
+regex — confirmed live that `user@localhost` (no TLD) and `not-an-email` are both rejected
+with 422, not just an obviously-malformed string. Frontend `Register.tsx` also validates
+client-side (matching the existing `<input type="email">` pattern already used on Login)
+before the round trip, backed by the backend as the actual source of truth.
+
+**3. JWT verified live, not just read.** Wrote a 25-check script exercising every claim
+SECURITY_SPEC.md's defence table makes, against the real running system: `alg:none` forgery
+rejected, a tampered signature rejected, a token signed with a different secret entirely
+rejected, a refresh token rejected when presented as an access token, no-auth-header rejected,
+the payload contains no PII (only `sub`/`type`/`jti`/`iat`/`exp`/`iss`/`aud`), refresh rotation
+issues a genuinely new token, replaying a revoked refresh token is rejected, and — the one that
+actually exercises the reuse-detection logic rather than just the "already used" check —
+replaying the SUCCESSOR of a replayed token is also rejected, proving the whole token family
+gets revoked, not just the one token that was reused. All 25 passed; nothing needed fixing.
+
+**4. The deep-link session bug — a real bug, root-caused and fixed.** `sessionStorage` (chosen
+in the 2026-09-05 fix for the cross-tab collision bug) is per-tab by design: a brand-new tab
+opened via a link, bookmark, or pasted URL starts with EMPTY sessionStorage no matter how
+signed-in the user is elsewhere in the same browser, so `InternalShell`'s route guard correctly
+(from its own point of view) sees no user and bounces to `/login`. This is not a bug in
+`InternalShell` — it is the documented, deliberate trade-off of the per-tab design finally
+being hit in practice.
+
+Fixed by mirroring the refresh token to `localStorage` as a "last known session" bootstrap
+value, with two rules that took two iterations to get right (both caught by writing a literal
+trace of the shipped logic against mock Storage objects standing in for multiple tabs, since
+this project has no frontend test runner):
+- A **routine background token rotation must never update the shared fallback** —
+  `setTokens()` gained a `{ background: true }` flag, passed only by `refreshAccessToken()`'s
+  own success path. Without this, the first version of the fix reintroduced the ORIGINAL
+  cross-tab bug one layer down: tab A's silent ~15-minute token refresh would overwrite tab B's
+  still-active identity in the shared fallback, so a brand-new tab C opened right after would
+  bootstrap into A's session instead of B's — purely because of refresh timing neither user
+  controlled. Caught immediately by the trace script.
+- **A tab that bootstrapped once, or ever explicitly signed in or out, must never bootstrap
+  again from the shared pool for the rest of that tab's life** — a `dealflow.bootstrapped`
+  sessionStorage sentinel. Without this, the SECOND version of the fix had an even worse bug:
+  explicitly signing out in tab A would immediately re-bootstrap tab A right back into whatever
+  identity happened to be sitting in the shared fallback (tab B's manager session, say) —
+  turning "sign out" into "silently sign in as someone else." Also caught by the trace script,
+  which is exactly why it was written before declaring the fix done rather than after.
+
+### Files Changed
+- `backend/app/services/auth.py` (`signup()`, `SignupError`)
+- `backend/app/api/v1/endpoints/auth.py` (`POST /signup`; corrected the stale docstring)
+- `backend/app/schemas/api.py` (`SignupRequest`)
+- `backend/app/models/audit.py` (`USER_REGISTERED` action)
+- `backend/tests/test_auth.py` (new — 7 tests)
+- `frontend/src/screens/Register.tsx` (new)
+- `frontend/src/screens/Login.tsx` (link to Register; corrected stale "no public sign-up" copy)
+- `frontend/src/lib/auth.tsx` (`signUp()`)
+- `frontend/src/lib/api.ts` (`setTokens`'s `background` flag and `BOOTSTRAPPED_KEY` sentinel)
+- `frontend/src/App.tsx` (`/register` route)
+- `PROJECT_CONTEXT.md`, `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+- Decision: signup auto-issues a token pair (auto-login) rather than requiring a separate
+  login call afterward.
+- Reason: PRD Section 5's own flow lists "signs up (first time) or logs in" as alternatives to
+  the same next step, not two actions in sequence; every real registration form does this.
+
+- Decision: password minimum length is 8 characters (SECURITY_SPEC.md says only "enforce
+  password policy" without a specific number).
+- Reason: a defensible, standard baseline; not raised as a question given how low-stakes and
+  reversible a single numeric threshold is.
+
+- Decision: a duplicate email on signup returns a specific 409 with a real message, unlike
+  login's deliberately generic 401 for every failure mode.
+- Reason: different threat models. Login's genericness stops an attacker from using the
+  endpoint to discover which emails have accounts; a signup form telling someone that the
+  email they just typed is already registered is not that attack, and every mainstream
+  registration flow surfaces it.
+
+- Decision: `PATCH /api/v1/admin/users/{id}/role` (role promotion) is explicitly NOT built this
+  round, even though Locked Business Rules #5 ties it to signup.
+- Reason: the user's request was specifically registration + login + JWT + the session bug;
+  building a role-management screen is a distinct, larger feature not asked for. Recorded as
+  an open item in Remaining Work rather than silently expanded into.
+
+### Validation
+- Tests: **230 backend tests pass** (223 prior + 7 new signup tests): Sales Rep assignment
+  regardless of caller, password hashed not stored plaintext, email normalization
+  (case/whitespace), a genuinely valid issued token pair, duplicate-email rejection
+  (case-insensitive too), and a structural assertion that `signup()`'s own parameter list has
+  no `role`/`role_id`/`customer_id` to smuggle through.
+- `ruff check .` / `ruff format --check .` clean. Frontend `tsc -b && vite build` clean.
+- Manual verification against real seeded PostgreSQL: the 25-check JWT/signup script above, run
+  twice (before and after a `ruff format` pass, to confirm the reformat changed nothing
+  behaviorally) — 25/25 both times. Re-ran all four prior sessions' live-API scripts unchanged
+  (billing/portal/upsell/deal-health+reports, 93 checks total) to confirm the auth changes —
+  which touch the dependency every single endpoint in the app relies on — introduced no
+  regression anywhere else.
+- The session-storage fix itself was verified with a standalone Node script tracing the exact
+  shipped `getRefreshToken`/`setTokens` logic against mock Storage objects simulating multiple
+  real browser tabs — 13/13 checks passing on the final version, after the first two versions
+  each failed one check that exposed a real design gap (see Implemented §4 above). This is the
+  same "verify against the real behavior, not just review the code" standard applied to every
+  backend feature in this project, extended to a piece of frontend logic that has no other way
+  to be exercised without a browser.
+
+### Known Issues
+- `PATCH /api/v1/admin/users/{id}/role` is still not built — an Admin promotes a self-registered
+  Sales Rep to another role by editing the database row directly. Tracked in Remaining Work.
+- The localStorage bootstrap fallback is a best-effort default for a brand-new tab, not a
+  guarantee of which identity it lands on if MULTIPLE different users are simultaneously active
+  in different tabs of the same browser (it bootstraps to whichever one most recently performed
+  an explicit sign-in) — this only matters for the multi-role-testing-in-one-browser workflow,
+  never for a normal single-user session, and a brand-new tab landing on "a" valid signed-in
+  identity instead of forcing a fresh login is strictly better than the bug being fixed.
+- No frontend test runner exists in this project (`tsc` + `vite build` are the only automated
+  frontend checks) — the session-storage fix's real verification is the standalone Node trace
+  script in this entry, not a checked-in test. Worth a real Vitest/jsdom setup if frontend logic
+  keeps getting subtle enough to need this treatment again.
+
+### Current State
+Registration is real: a Sales Rep can create their own account and is signed in immediately.
+JWT issuing, verification, rotation, and reuse detection are all confirmed working correctly
+against the live system, not just read as correct in the source. The deep-link/new-tab session
+bug is fixed without reintroducing the cross-tab collision bug the sessionStorage design
+originally existed to prevent — confirmed by literally tracing both failure modes before
+declaring it done, not by inspection alone.
+
+### Next Recommended Step
+Nothing is blocking. If continuing: `PATCH /api/v1/admin/users/{id}/role` for role promotion
+(the other half of Locked Business Rules #5), or any of the previously-recorded Remaining Work
+items.

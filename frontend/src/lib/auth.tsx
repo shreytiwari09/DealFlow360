@@ -15,6 +15,7 @@ interface AuthState {
   user: CurrentUser | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string, fullName: string) => Promise<void>;
   signOut: () => Promise<void>;
   can: (permission: string) => boolean;
 }
@@ -57,6 +58,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(await api.get<CurrentUser>("/auth/me"));
   }, []);
 
+  /**
+   * PRD A1: "Internal users can sign up and log in." Signup issues a token
+   * pair immediately (see `services/auth.py`'s `signup()`), so this is the
+   * same shape as `signIn` — one call, then the session is live.
+   */
+  const signUp = useCallback(async (email: string, password: string, fullName: string) => {
+    const tokens = await api.post<TokenResponse>("/auth/signup", {
+      email,
+      password,
+      full_name: fullName,
+    });
+    setTokens(tokens.access_token, tokens.refresh_token);
+    setUser(await api.get<CurrentUser>("/auth/me"));
+  }, []);
+
   const signOut = useCallback(async () => {
     const refresh = getRefreshToken();
     try {
@@ -73,10 +89,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       signIn,
+      signUp,
       signOut,
       can: (permission: string) => user?.permissions.includes(permission) ?? false,
     }),
-    [user, loading, signIn, signOut],
+    [user, loading, signIn, signUp, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

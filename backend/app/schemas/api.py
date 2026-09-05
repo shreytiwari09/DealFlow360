@@ -30,6 +30,26 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class SignupRequest(BaseModel):
+    """PRD A1 / Locked Business Rules #5: public signup, always a Sales Rep.
+
+    There is deliberately no `role`, `role_id` or `customer_id` field here —
+    SECURITY_SPEC.md Section 8's mass-assignment case ("a profile update must
+    not silently allow {"role": "Admin"}") is enforced structurally, not by
+    discipline: the field doesn't exist on this model, so there is nothing
+    for a crafted request body to smuggle in even if the endpoint were
+    careless about it.
+
+    `EmailStr` (via the `email-validator` package) is real RFC 5321/5322
+    validation, not a `.`/`@` regex — it rejects a bare "user@localhost" with
+    no TLD as well as the more obviously wrong "not-an-email".
+    """
+
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=200)
+    full_name: str = Field(min_length=1, max_length=160)
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 

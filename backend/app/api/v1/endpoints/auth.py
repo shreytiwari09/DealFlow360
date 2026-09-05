@@ -5,8 +5,10 @@ pre-submission checklist requires it, and PLAN.md Section 26 ranks security
 basics below core workflow in a crunch — which is exactly how a "we'll harden
 later" item never happens.
 
-There is deliberately NO signup endpoint. See PROJECT_CONTEXT.md Locked
-Business Rules #5.
+Public signup exists (`POST /signup`) per PROJECT_CONTEXT.md Locked Business
+Rules #5 — this module's own docstring used to claim the opposite, which was
+simply wrong: the rule was locked and written up early in the build, but the
+endpoint implementing it was never actually added until now.
 """
 
 from __future__ import annotations
@@ -20,15 +22,18 @@ from app.schemas.api import (
     CurrentUserResponse,
     LoginRequest,
     RefreshRequest,
+    SignupRequest,
     TokenResponse,
 )
 from app.services import audit
 from app.services.auth import (
     AuthError,
+    SignupError,
     authenticate,
     revoke_refresh_token,
     rotate_refresh_token,
 )
+from app.services.auth import signup as signup_user  # avoids shadowing the endpoint below
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -38,6 +43,44 @@ _INVALID_CREDENTIALS = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
     detail="Incorrect email or password.",
 )
+
+
+@router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
+async def signup(
+    request: Request,
+    response: Response,
+    payload: SignupRequest,
+    session: SessionDep,
+) -> TokenResponse:
+    """PRD A1: "Internal users can sign up and log in with standard
+    credentials." Always creates a Sales Rep (Locked Business Rules #5) —
+    `SignupRequest` has no `role` field for a crafted body to smuggle a
+    privilege escalation through in the first place.
+
+    Tighter rate limit than login (5/minute vs 10/minute): account creation
+    is the more expensive operation (an Argon2id hash plus a DB write, not
+    just a hash comparison) and a more attractive target for abuse.
+    """
+    try:
+        user, tokens = await signup_user(
+            session, email=payload.email, password=payload.password, full_name=payload.full_name
+        )
+    except SignupError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+
+    await audit.record(
+        session,
+        action=AuditAction.USER_REGISTERED,
+        user_id=user.id,
+        resource="auth",
+        resource_id=user.id,
+        reason=f"self-registered as {user.email}",
+        request=request,
+    )
+    await session.commit()
+    return TokenResponse(**tokens.__dict__)
 
 
 @router.post("/login", response_model=TokenResponse)

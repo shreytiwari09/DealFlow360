@@ -12,6 +12,21 @@ greenlet>=3.1,<4.0
 # Versioned migrations - mandated by PLAN.md Section 6 (no create_all)
 alembic>=1.14,<2.0
 
+# Security. Adopted at the Phase 3 Section 0.5 checkpoint - stdlib provides
+# neither password hashing at these standards nor JWT.
+#   argon2-cffi : Argon2id, named first by SECURITY_SPEC Section 3. Work-factor
+#                 parameters are encoded in the hash string, so they can be
+#                 raised later without a migration.
+#   PyJWT       : `algorithms=[...]` is a REQUIRED argument to decode(), so the
+#                 allowlist SECURITY_SPEC Section 9 demands cannot be forgotten;
+#                 alg:none is structurally impossible.
+#   slowapi     : login rate limiting (SECURITY_SPEC Section 5). In-memory by
+#                 default - no Redis - and the backend is swappable later
+#                 without touching call sites.
+argon2-cffi>=23.1,<26.0
+PyJWT>=2.10,<3.0
+slowapi>=0.1.9,<1.0
+
 # Validation + settings
 pydantic>=2.10,<3.0
 pydantic-settings>=2.7,<3.0

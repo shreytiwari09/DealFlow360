@@ -42,6 +42,7 @@ backend/
       errors.py       Global handlers: generic client messages + correlation id,
                       full detail logged server-side only.
       logging.py      Logging setup.
+      security.py     Argon2id password hashing. JWT joins it at login.
     db/
       base.py         DeclarativeBase + metadata naming convention + TimestampMixin.
       session.py      Async engine, bounded pool, get_session() with rollback.
@@ -53,15 +54,18 @@ backend/
                       Alembic autogenerate silently omits its table.
     schemas/          Pydantic response DTOs (health.py only so far).
     services/         state_machine.py - transition tables for all six
-                      lifecycle entities, plus assert_transition(). Pure, no
-                      I/O. Phase 3 business logic joins it here.
+                      lifecycle entities, plus assert_transition().
+                      risk.py - the blended risk engine and approval router.
+                      Both pure: no DB, no I/O, no ORM objects.
+    seed.py           Idempotent demo/dev seed. `python -m app.seed`.
     api/
       deps.py         SessionDep. Auth/permission dependencies land here in Phase 6.
       v1/router.py    Aggregate router; feature routers registered here.
       v1/endpoints/   health.py only so far.
-  tests/              test_health.py (endpoints), test_state_machines.py
-                      (pure), test_db_constraints.py (runs against the real
-                      PostgreSQL schema, each test rolled back).
+  tests/              test_health.py (endpoints), test_state_machines.py and
+                      test_risk_engine.py (pure), test_db_constraints.py and
+                      test_seed_data.py (real PostgreSQL, each test rolled
+                      back). test_seed_data.py REQUIRES the seed to have run.
 frontend/
   src/App.tsx         Unstyled Phase 1 placeholder — replace entirely at Phase 8.
   src/lib/api.ts      Thin fetch client; base URL from VITE_API_BASE_URL.
@@ -220,6 +224,28 @@ elif max(line_excess_i) > 15:       Manager -> Finance     # gate (a) wins
 elif score >= 25:                   Manager -> Finance
 else:                               Manager
 ```
+
+> ### FINDING (2026-09-05): the `>= 25` band is unreachable, so the gate is the
+> only Finance trigger
+>
+> The blended score is a value-**weighted mean** of the per-line excesses, and a
+> weighted mean can never exceed its largest input. Therefore
+> `score <= max_line_excess`, always.
+>
+> It follows that `score >= 25` implies `max_line_excess >= 25`, which is well over
+> the gate's 15, so **the gate has already fired before the band is ever consulted.**
+> The `>= 25` rows in `approval_chains` are harmless belt-and-braces but they never
+> independently decide anything.
+>
+> This is not a bug — routing is correct, and both demo paths work — but the band is
+> doing no work. **Options if you want it to:** lower the band to something below 15
+> (e.g. `>= 10`), so a broad pattern of moderate breaches escalates to Finance even
+> when no single line is severe; or leave it and treat the single-line gate as the
+> sole Finance trigger. It is seed data either way — a one-row change.
+>
+> Encoded as `test_finance_band_is_unreachable_without_the_line_gate_firing_first`
+> in `tests/test_risk_engine.py`. If the band is ever retuned below 15, that test
+> fails, and the failure is the signal.
 
 > **Note on demo-ability.** A blended score of 25 is a very large breach — roughly a 40%
 > discount order-wide against a 15% ceiling — so band (b) alone would almost never fire,
@@ -417,6 +443,9 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
 | **Enums as VARCHAR + named CHECK, not native PG ENUM** (Phase 2 checkpoint) | `ALTER TYPE ... ADD VALUE` cannot always run in a transaction and is awkward to reverse in a downgrade. PLAN.md Section 7 expects the schema to keep evolving, and a CHECK constraint is ordinary DDL that Alembic can drop and recreate | Native PostgreSQL ENUM types | Slightly less "proper" typing at the database level; the database still rejects invalid values, so nothing is lost in enforcement |
 | **Snapshot pricing and discount ceilings onto quotation lines** (Phase 2) | An approved quotation must remain reproducible after master data changes, and an auditor must be able to see what the policy was at approval time | Join to live master data on read | Denormalised data that must be written correctly once; the alternative silently produces numbers that disagree with what the customer signed |
 | **Optimistic locking (`version`) on quotations** (Phase 2) | Two managers approving the same quote concurrently would otherwise last-write-win silently. SQLAlchemy raises `StaleDataError` instead | Pessimistic `SELECT … FOR UPDATE` on every read | Callers must handle a conflict error; far cheaper than holding row locks across a user's think-time |
+| **argon2-cffi for password hashing** (Phase 3 checkpoint) | SECURITY_SPEC names Argon2id first; work-factor parameters live inside the hash string, so raising cost later needs no migration - just rehash-on-login | bcrypt directly (silently truncates at 72 bytes); passlib (unmaintained since 2020, breaks on bcrypt 4.x) | ~50-100ms per hash, which is the point |
+| **PyJWT for tokens** (Phase 3 checkpoint) | `algorithms=[...]` is a REQUIRED argument to `decode()`, so the allowlist SECURITY_SPEC Section 9 demands cannot be forgotten and `alg:none` is structurally impossible | python-jose (slower releases, algorithm-confusion CVE history - the exact attack the spec lists) | None material; PyJWT does less, and less is what we need |
+| **slowapi for login rate limiting** (Phase 3 checkpoint) | A hand-rolled dict-pruned-on-read limiter has a genuine read-then-write race under async, and nobody writes tests for a rate limiter at 2am. Defaults to in-memory, so "no Redis" is the default path, not a workaround; the backend swaps later without touching call sites | Hand-rolled sliding window (race-prone); deferring to Phase 6 (rejected - it is on the pre-submission checklist and hardening phases are exactly what gets squeezed) | Two small dependencies |
 | **Secrets have no in-code defaults** | `POSTGRES_PASSWORD` / `JWT_SECRET_KEY` are required settings, so the app fails loudly rather than silently running on a placeholder | Defaults for developer convenience | A missing `.env` is now a startup error — which is the intended behaviour |
 
 ### Section 0.5 Technology Evaluation Checkpoints (log)
@@ -519,7 +548,18 @@ does not "fix" the discrepancy against PLAN.
   and database constraints proven against real PostgreSQL
 - ERD checked in at `docs/erd.md`, all 10 diagrams machine-parsed
 
-**Phase 3 onward: not started.**
+**Phase 3 (Core Business Workflow): in progress.**
+- Section 0.5 checkpoint run; three dependencies adopted (argon2-cffi, PyJWT, slowapi)
+- Blended risk engine and approval router implemented in `app/services/risk.py` - pure,
+  `Decimal` throughout, 35 tests including both PRD Section 10 worked examples, every band
+  boundary at its exact edge, and the single-line gate tested independently of the demo paths
+- Argon2id password hashing in `app/core/security.py`
+- Idempotent seed data covering RBAC, customers, catalogue, price lists, the full ceiling
+  matrix, approval chains, warehouses, stock, subscription plans and upsell rules
+- 124 tests pass
+
+Not yet built: login/JWT endpoints, quotation CRUD, approval workflow endpoints, warehouse
+split, billing, portal.
 
 ## Remaining Work
 Mirrors PLAN.md Section 18. No 🔴 Core / 🟡 Supporting / 🟢 Bonus *behaviour* is implemented

@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +53,18 @@ NOW = datetime.now(UTC)
 
 @pytest.fixture
 async def role(db_session: AsyncSession) -> Role:
+    """Reuse the seeded role if the seed has been run.
+
+    `roles.code` is UNIQUE over a fixed enum, so unlike the other fixtures this
+    one cannot sidestep collisions with a generated code - it has to adopt the
+    existing row.
+    """
+    existing = (
+        await db_session.execute(select(Role).where(Role.code == RoleCode.SALES_REP))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
     role = Role(code=RoleCode.SALES_REP, name="Sales Rep")
     db_session.add(role)
     await db_session.flush()

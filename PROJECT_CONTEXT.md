@@ -20,7 +20,7 @@ DealFlow360 is a self-governing B2B sales operations platform — a full quote-t
 
 ## Current Architecture
 - **Backend:** FastAPI (Python 3.12) — async-native, Pydantic v2 validation, auto-generated OpenAPI docs (disabled in production).
-- **Frontend:** React 18 + TypeScript, built with Vite. **Design system/mockup input still pending** — an Excalidraw mockup exists; Claude must ask for a markdown resource file before building any screen (PLAN.md Section 13/Phase 8). The current page is an unstyled connectivity placeholder, not a design decision.
+- **Frontend:** React 18 + TypeScript, built with Vite. **Design input RECEIVED 2026-09-05** — `FRONTEND.md` is the implementation contract: 18 screens, two shells, design tokens, component inventory, route map and a TBD list. It is the Phase 8 design input PLAN.md Section 13 was waiting for, so the UI hold is lifted. FRONTEND.md is authoritative for screen content and visual chrome; the backend remains authoritative for data shape and for every authorization decision.
 - **Database:** PostgreSQL 16 via SQLAlchemy 2 (async, `asyncpg`) + Alembic (versioned migrations — required, not optional, per ERP industry-standard practice).
 - **Infra:** Docker Compose (Postgres + backend + frontend). No Redis.
 - **NOT using:** the Odoo framework itself (any stack allowed per hackathon rules) — business logic conceptually mirrors Odoo's domain model.
@@ -498,6 +498,19 @@ Reverting would also be *worse* data modelling, not stricter plan-adherence: a r
 state would become a derived flag, and rejection reporting would depend on joining
 `approval_requests` and picking the latest row per quotation. Recorded here so a later session
 does not "fix" the discrepancy against PLAN.
+
+**From FRONTEND.md Section 9 — 18 frontend TBDs carried here per its own instruction.** Not
+repeated in full; `FRONTEND.md` Section 9 is the list. The ones that will bite soonest, in
+build order: the discount input control on Screen 4 (#4), the dismiss affordance for upsell
+suggestions (#5), the "skipped" visual for the Finance step in the approval stepper (#6), and
+per-role scoping of the dashboard and list screens (#11). Defaults are proposed inline in
+FRONTEND.md for each; none is to be resolved silently.
+
+**Reconciled by FRONTEND.md, no longer open:** the quotation `negotiation` state is confirmed
+as a real backend state (FRONTEND.md Section 9 item 3), which matches the superset state
+machine already implemented — `under_negotiation`. FRONTEND.md Section 18's note that the risk
+formula is "not yet locked" is stale and has been annotated in place; the formula, gate, bands
+and ceiling matrix are all locked here.
 
 **Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.

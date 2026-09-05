@@ -1,0 +1,668 @@
+/*
+ * Application styles. References tokens.css only — no raw colours or
+ * magic numbers below this line.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* --- Internal shell (FRONTEND.md Section 2.1) --------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-rows: var(--header-height) 1fr;
+  grid-template-areas: "brand header" "sidebar main";
+  min-height: 100vh;
+}
+
+.shell__brand {
+  grid-area: brand;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  font: var(--font-section-title);
+  letter-spacing: -0.01em;
+}
+
+.shell__brand-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-input);
+  background: var(--color-accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.shell__header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0 var(--space-5);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.shell__breadcrumb {
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+}
+
+.shell__user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font: var(--font-meta);
+}
+
+.shell__user-name {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.shell__sidebar {
+  grid-area: sidebar;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  padding: var(--space-4) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.shell__main {
+  grid-area: main;
+  padding: var(--space-5);
+  min-width: 0;
+}
+
+.nav-item {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-input);
+  color: var(--color-text-muted);
+  font: var(--font-data);
+  text-decoration: none;
+}
+.nav-item:hover {
+  background: var(--color-neutral-soft);
+  color: var(--color-text);
+  text-decoration: none;
+}
+/* Active state deliberately subtle, not saturated — Style Spec Section 4. */
+.nav-item--active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.nav-section {
+  margin-top: var(--space-4);
+  padding: 0 var(--space-3) var(--space-1);
+  font: var(--font-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+/* --- Page furniture ----------------------------------------------------- */
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.page-title {
+  font: var(--font-page-title);
+  margin: 0 0 var(--space-1);
+}
+
+.page-subtitle {
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+}
+
+.card__title {
+  font: var(--font-section-title);
+  margin: 0 0 var(--space-3);
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+/* --- KPI card (Section 4.2) --------------------------------------------- */
+
+.kpi {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+.kpi:hover {
+  border-color: var(--color-accent);
+  text-decoration: none;
+}
+.kpi__label {
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.kpi__value {
+  font: 600 28px/1.2 var(--font-ui);
+  margin: var(--space-2) 0 var(--space-1);
+}
+.kpi__caption {
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+}
+
+/* --- Status badge (Section 4.1) — colour AND text, never colour alone --- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  font: 600 12px/1.6 var(--font-ui);
+  white-space: nowrap;
+}
+.badge--neutral {
+  background: var(--color-neutral-soft);
+  color: var(--color-neutral);
+}
+.badge--success {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+.badge--warning {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+.badge--error {
+  background: var(--color-error-soft);
+  color: var(--color-error);
+}
+.badge--accent {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+/* --- Data table (Section 4.3) ------------------------------------------- */
+
+.table-wrap {
+  /* Wide tables scroll rather than silently dropping columns — Section 8. */
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--font-body);
+}
+
+table.data th {
+  text-align: left;
+  font: var(--font-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+table.data td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+table.data tbody tr:last-child td {
+  border-bottom: none;
+}
+
+table.data tbody tr.clickable {
+  cursor: pointer;
+}
+table.data tbody tr.clickable:hover {
+  background: var(--color-accent-soft);
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.primary-cell {
+  font: var(--font-data);
+}
+.sub-cell {
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+}
+
+/* --- Note bar (Section 4.4) — persistent contextual help, not a toast --- */
+
+.note {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-accent-soft);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-input);
+  font: var(--font-meta);
+  color: var(--color-text);
+}
+.note--warning {
+  background: var(--color-warning-soft);
+  border-left-color: var(--color-warning);
+}
+
+/* --- Approval stepper (Section 4.5) ------------------------------------- */
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  font: var(--font-meta);
+  background: var(--color-surface);
+}
+.step__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-border);
+}
+.step--done .step__dot {
+  background: var(--color-success);
+}
+.step--done {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+.step--current .step__dot {
+  background: var(--color-warning);
+}
+.step--current {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+  font-weight: 600;
+}
+.step--rejected .step__dot {
+  background: var(--color-error);
+}
+.step--rejected {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+/* "Skipped" — FRONTEND.md Section 4.5 TBD #6; proposed treatment is greyed
+   out with an explicit "not required" label, which is what this renders. */
+.step--skipped {
+  opacity: 0.5;
+  border-style: dashed;
+}
+.step__arrow {
+  color: var(--color-text-muted);
+}
+
+/* --- Filter chips (Section 4.6) ----------------------------------------- */
+
+.chip {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  font: var(--font-meta);
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+.chip--active {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+/* --- Controls ----------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-input);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-data);
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--color-text-muted);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+.btn--success {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #fff;
+}
+.btn--danger {
+  background: var(--color-surface);
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+.btn--sm {
+  padding: var(--space-1) var(--space-2);
+  font: var(--font-meta);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-body);
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: 2px solid var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+.input--num {
+  width: 84px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.field__label {
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+.field__error {
+  font: var(--font-meta);
+  color: var(--color-error);
+}
+
+/* --- States (Section 7) -------------------------------------------------- */
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-neutral-soft) 25%,
+    var(--color-bg) 37%,
+    var(--color-neutral-soft) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+  border-radius: var(--radius-input);
+  height: 14px;
+}
+@keyframes shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+.empty,
+.error-state {
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+  color: var(--color-text-muted);
+  font: var(--font-body);
+}
+.empty__title,
+.error-state__title {
+  font: var(--font-section-title);
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+}
+
+/* --- Login (Screen 1) ---------------------------------------------------- */
+
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+}
+.login__card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-6);
+}
+.login__brand {
+  font: var(--font-page-title);
+  text-align: center;
+  margin-bottom: var(--space-1);
+}
+.login__tagline {
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+  text-align: center;
+  margin-bottom: var(--space-5);
+}
+.login__accounts {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+.login__account {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: none;
+  background: none;
+  border-radius: var(--radius-input);
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  text-align: left;
+}
+.login__account:hover {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+/* --- Pipeline (Screen 3) ------------------------------------------------- */
+
+.pipeline {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
+  gap: var(--space-3);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
+.pipeline__col {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-3);
+  min-height: 140px;
+}
+.pipeline__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+.pipeline__title {
+  font: var(--font-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+.deal-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  color: inherit;
+}
+.deal-card:hover {
+  border-color: var(--color-accent);
+}
+.deal-card__customer {
+  font: var(--font-data);
+}
+.deal-card__meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: var(--space-2);
+  font: var(--font-meta);
+  color: var(--color-text-muted);
+}
+
+/* --- Utilities ----------------------------------------------------------- */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.row--between {
+  justify-content: space-between;
+}
+.muted {
+  color: var(--color-text-muted);
+}
+.mono-num {
+  font-variant-numeric: tabular-nums;
+}
+.spacer {
+  flex: 1;
+}
+
+/* --- Responsive (Section 8) ---------------------------------------------- */
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-areas: "brand" "header" "main";
+  }
+  .shell__sidebar {
+    display: none;
+  }
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

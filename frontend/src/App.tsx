@@ -1,43 +1,83 @@
-import { useEffect, useState } from "react";
-import { fetchReadiness, type HealthResponse } from "./lib/api";
+/**
+ * Route map — FRONTEND.md Section 10.
+ *
+ * Only the routes that are actually built are registered. Screens 7-18 have
+ * sidebar entries marked "not built yet" rather than routes that would render
+ * an empty shell — a nav item that leads nowhere is worse than one that says
+ * so honestly.
+ *
+ * Route guards here are UX only. The backend rejects unauthorized calls
+ * regardless of what the router shows (SECURITY_SPEC.md Section 4).
+ */
+
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider, useAuth } from "./lib/auth";
+import InternalShell from "./layouts/InternalShell";
+import Login from "./screens/Login";
+import Dashboard from "./screens/Dashboard";
+import QuotationsList from "./screens/QuotationsList";
+import QuotationDetail from "./screens/QuotationDetail";
+import ApprovalsList from "./screens/ApprovalsList";
+import ApprovalDetail from "./screens/ApprovalDetail";
+import "./styles/tokens.css";
+import "./styles/app.css";
+
+/** Sends an already-signed-in user to the right shell for their role. */
+function LoginRoute() {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="login">Loading…</div>;
+  if (user) return <Navigate to={user.role === "customer" ? "/portal" : "/dashboard"} replace />;
+  return <Login />;
+}
 
 /**
- * PHASE 1 FOUNDATION PLACEHOLDER - NOT A DESIGNED SCREEN.
- *
- * PLAN.md Phase 8 (Section 13) holds all UI work until the Excalidraw mockup /
- * design-system resource is provided. This component exists only to prove the
- * React -> FastAPI -> PostgreSQL path is wired end to end. It is intentionally
- * unstyled: no palette, no component library, no layout decisions have been
- * invented here. Replace it entirely once design input arrives.
+ * The customer portal shell (FRONTEND.md Section 2.2) is Phase 3 step 7 and
+ * is not built. Portal users are told so rather than being dropped into the
+ * internal shell, which they must never see.
  */
-export default function App() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchReadiness()
-      .then(setHealth)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Request failed"));
-  }, []);
-
+function PortalPlaceholder() {
+  const { user, signOut } = useAuth();
   return (
-    <main>
-      <h1>DealFlow360</h1>
-      <p>
-        <strong>Phase 1 foundation placeholder.</strong> No UI has been designed yet - see
-        PLAN.md Phase 8. This page only verifies backend connectivity.
-      </p>
+    <div className="login">
+      <div className="login__card">
+        <div className="login__brand">DealFlow360</div>
+        <p className="login__tagline">Customer portal</p>
+        <p>
+          Signed in as <strong>{user?.full_name}</strong>
+          {user?.customer_name ? ` (${user.customer_name})` : ""}.
+        </p>
+        <p className="muted">
+          The negotiation screen is not built yet. It is a separate, restricted view — not
+          the internal workspace — so there is deliberately nothing here to fall back to.
+        </p>
+        <button className="btn" onClick={() => void signOut()}>
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
 
-      <h2>Backend connectivity</h2>
-      {error && <p>Backend unreachable: {error}</p>}
-      {!error && !health && <p>Checking...</p>}
-      {health && (
-        <ul>
-          <li>API status: {health.status}</li>
-          <li>Environment: {health.environment}</li>
-          <li>Database: {health.database}</li>
-        </ul>
-      )}
-    </main>
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<LoginRoute />} />
+          <Route path="/portal" element={<PortalPlaceholder />} />
+
+          <Route element={<InternalShell />}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/quotations" element={<QuotationsList />} />
+            <Route path="/quotations/:id" element={<QuotationDetail />} />
+            <Route path="/approvals" element={<ApprovalsList />} />
+            <Route path="/approvals/:id" element={<ApprovalDetail />} />
+          </Route>
+
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }

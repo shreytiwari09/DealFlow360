@@ -3,23 +3,26 @@
 ## Current Objective
 Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.md Section 18), sequenced: 🔴 Core workflow fully working first, then 🟡 Supporting, then 🟢 Bonus only if ahead of schedule. Database and business-logic correctness are being treated as first-class judging criteria, not implementation afterthoughts.
 
-**Where we are right now:** Phases 1, 2 and 3 are all complete, plus a Phase 8 frontend slice
-brought forward at the user's request, plus the first 🟡 Supporting item (upsell). **All PRD
-Core (🔴) scope is done.** There is a working, demoable application — see `DEMO.md`, the
-verified script to run in front of an interviewer, now covering fulfillment, billing and
-portal negotiation as well as the two original approval flows.
+**Where we are right now:** Phases 1, 2, 3 and 5 are all complete, plus a Phase 8 frontend
+slice brought forward at the user's request. **Every Core (🔴) and Supporting (🟡) item in
+PLAN.md Section 18's classification is done.** There is a working, demoable application — see
+`DEMO.md`, the verified script to run in front of an interviewer (its script currently covers
+the two original approval flows plus fulfillment, billing and portal negotiation; the Phase 5
+screens are real and tested but not yet added to that script — see its own changelog note).
 
 Working end to end: login for all five roles, quotation builder with a live blended risk score,
 order-level and per-line discounts, a subscription-plan picker for hybrid lines, and a real
 Upsell & Cross-Sell panel; automatic approval routing (including the sequential two-step
 Manager→Finance chain); approve / reject / return-for-revision with a mandatory reason; a full
 audit trail; multi-warehouse fulfillment with backorders; hybrid billing with daily-basis
-mid-cycle proration; and a genuinely separate customer portal where a counter-offer that
-breaches policy automatically re-enters approval. Screens 1-13 of `FRONTEND.md` are built.
+mid-cycle proration; a genuinely separate customer portal where a counter-offer that breaches
+policy automatically re-enters approval; a deal health dashboard with real stalled/anomaly/
+slippage thresholds; filtered reporting with PDF/XLS export; and admin screens for discount
+tiers, approval chains and the product catalogue. Screens 1-18 of `FRONTEND.md` each have a
+real screen or a deliberate, documented gap (variant/price-list editing — see "Remaining Work").
 
-**Next:** everything remaining is 🟡 Supporting scope — the deal health dashboard (blocked on
-undefined thresholds), reporting, and admin config screens. See "Remaining Work" for the
-ordered backlog.
+**Next:** only 🟢 Bonus scope (multi-currency, multi-company — PLAN.md marks these explicitly
+optional) and the deliberately-deferred items below remain. See "Remaining Work."
 
 **Source-of-truth documents:** `PLAN.md` (process and order), `PROJECT_CONTEXT.md` (this file),
 `IMPLEMENTATION_LOG.md` (history), `SECURITY_SPEC.md` (security contract), `FRONTEND.md`
@@ -530,6 +533,37 @@ which only Admin holds. It is gated by *permission*, not by a role check, so it 
 consistent with SECURITY_SPEC.md Section 4's rule — Admin holds it only because Admin is
 seeded with every permission.
 
+### 9. Deal Health Anomaly Thresholds — LOCKED (2026-09-06)
+
+PLAN.md §0.6 names this explicitly as a "stop and ask" item; confirmed with the user before
+implementing. Both numbers are read from a config row (`report_settings`-shaped, actually
+just two module constants for now — see Known Issues), not hardcoded deep in logic, so they
+can be retuned without a code change to the *formula*.
+
+**Stalled**: no activity (`quotation.last_activity_at`) for **7 or more days**, for any
+quotation not yet in a terminal state (`confirmed`, `fulfilled`, `rejected`, `cancelled`).
+`days_inactive = today - last_activity_at`.
+
+**Discount anomaly**: this quotation's *effective discount* —
+`discount_amount / subtotal_amount * 100`, i.e. the realized blended discount rate, not the
+risk score — is **more than 10 percentage points above** the owning rep's own average
+effective discount across their own most recent 20 non-draft quotations (or all of them, if
+the rep has fewer than 20). The quotation being evaluated is excluded from its own baseline.
+A rep with no other non-draft quotations has no baseline yet, so no anomaly can be flagged —
+recorded as "insufficient history," not silently treated as zero.
+
+**Delivery slippage**: needs no new threshold — it is a comparison already possible from
+existing data. A fulfillment has slipped once `today > promised_date` and the fulfillment
+has not reached `fulfilled`; `days_slipped = today - promised_date`.
+
+**Implementation note**: no scheduled job exists (see "Background Jobs" — still "not yet
+implemented"). Rather than block the dashboard on building a scheduler, health is computed
+live and a fresh `DealHealthSnapshot` row is written every time the dashboard is viewed —
+the same "compute lazily on the read that needs it" pattern already used for fulfillment's
+auto-generated split. This gives genuine history (a manager sees a deal has been stalling for
+a week, not only that it is stalled *now*) without needing a cron-equivalent process, at the
+cost of a snapshot only existing for a day someone actually opened the dashboard.
+
 ## Core Workflows
 1. Rep builds quotation → adds lines → applies discounts (line-level, or order-level distributed onto every line — see Locked Business Rules #4)
 2. Blended risk score computed live across all lines (**formula locked — see Locked Business Rules #1**)
@@ -604,6 +638,7 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
 | **PyJWT for tokens** (Phase 3 checkpoint) | `algorithms=[...]` is a REQUIRED argument to `decode()`, so the allowlist SECURITY_SPEC Section 9 demands cannot be forgotten and `alg:none` is structurally impossible | python-jose (slower releases, algorithm-confusion CVE history - the exact attack the spec lists) | None material; PyJWT does less, and less is what we need |
 | **slowapi for login rate limiting** (Phase 3 checkpoint) | A hand-rolled dict-pruned-on-read limiter has a genuine read-then-write race under async, and nobody writes tests for a rate limiter at 2am. Defaults to in-memory, so "no Redis" is the default path, not a workaround; the backend swaps later without touching call sites | Hand-rolled sliding window (race-prone); deferring to Phase 6 (rejected - it is on the pre-submission checklist and hardening phases are exactly what gets squeezed) | Two small dependencies |
 | **Secrets have no in-code defaults** | `POSTGRES_PASSWORD` / `JWT_SECRET_KEY` are required settings, so the app fails loudly rather than silently running on a placeholder | Defaults for developer convenience | A missing `.env` is now a startup error — which is the intended behaviour |
+| **`openpyxl` (XLSX) + `fpdf2` (PDF) for reporting export** (Phase 5 §0.5 checkpoint) | PRD A7 explicitly asks for PDF/XLS export. Both are pure Python with no system libraries to bake into the Docker image | `weasyprint` for PDF (needs Pango/Cairo — meaningfully bloats the image and adds a class of "works on my machine" build failure this project has otherwise avoided); `reportlab` (heavier API for the same tabular-report need `fpdf2` already covers) | `fpdf2`'s styling is basic — tables and text, no charts — which is exactly what a tabular sales report needs and nothing more |
 
 ### Section 0.5 Technology Evaluation Checkpoints (log)
 
@@ -794,36 +829,47 @@ clarifying question: low-stakes, reversible, and documented here rather than blo
   the exact line `addProduct()` would create. Builder also gained the Order-Level Discount
   control (Locked Business Rules #4) that had been deferred since Phase 3 began.
 
-**Phase 8 (Frontend): Screens 1-13 built.** Screens 1-6 brought forward at the user's request
-once `FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment), 9-10/12-13
-(Subscriptions/Invoices) and 11 (the customer portal, its own separate shell) each followed
-immediately once their respective backends existed. Screens 14-18 appear in the internal
-sidebar explicitly disabled rather than as links to empty pages.
+**Phase 5 (Supporting): complete — all four originally-listed items.**
+- **Deal health dashboard** (PRD B9) — `app/services/dealhealth.py` implements the thresholds
+  locked in #9: 7+ days idle is "stalled," more than 10 points above a rep's own trailing
+  20-quote average is a "discount anomaly," and any fulfillment past its `promised_date` has
+  "delivery slippage." No scheduler exists, so health is recomputed and snapshotted live on
+  every dashboard view rather than by a background job.
+- **Reporting + export** (PRD A7) — filters exactly matching PRD A7's own list (Period, Rep,
+  Approval Status, Category), with `openpyxl`/`fpdf2` export (Section 0.5 checkpoint — see
+  Important Technical Decisions).
+- **Admin config screens** (Screen 18) — the discount ceiling matrix and approval-chain bands
+  are now editable through the UI, not just seeded data. One reconciliation: the wireframe's
+  two separate "tier" and "category" ceiling tables are rendered as the one matrix the backend
+  actually stores (Locked Business Rules #1/#6), since the ceiling has always been a
+  (tier, category) pair, not two independent limits.
+- **Product catalogue** (Screens 16-17) — Product and Category CRUD (create, edit, archive).
+  Variant and price-list editing from the wireframe are not built this round — general info is
+  the part PRD A2 actually gates the builder's product picker on.
 
-**Verified 2026-09-06:** 197 unit/integration tests (185 + 12 new upsell tests) plus 56 + 51 +
-40 + 29 + 9 end-to-end API checks all pass. Fulfillment's flows (Confirm → auto-generated split
-→ Accept, Manual Override, Consolidate-after-restock) were driven through the real UI
-headlessly; the billing, portal and upsell work compile and type-check against the real API
-(`tsc -b && vite build` clean) and were verified via live-API scripts, but have not yet had a
-full browser click-through — see `IMPLEMENTATION_LOG.md`'s Known Issues for that entry.
-`DEMO.md` now covers fulfillment, billing and portal negotiation too (see its own changelog
-note at the top).
+**Phase 8 (Frontend): Screens 1-18 all have a real screen or a deliberate, documented gap.**
+Screens 1-6 brought forward at the user's request once `FRONTEND.md` supplied the design
+input; Screens 7-8 (Fulfillment), 9-10/12-13 (Subscriptions/Invoices), 11 (the customer
+portal), 14 (Deal Health), 15 (Reports) and 16-18 (Admin config) each followed once their
+respective backends existed.
+
+**Verified 2026-09-06:** 223 unit/integration tests (197 + 26 new deal-health/reporting tests)
+plus 56 + 51 + 40 + 29 + 9 + 15 end-to-end API checks all pass. Fulfillment's flows (Confirm →
+auto-generated split → Accept, Manual Override, Consolidate-after-restock) were driven through
+the real UI headlessly; everything built since (billing, portal, upsell, deal health,
+reporting, admin config) compiles and type-checks against the real API (`tsc -b && vite build`
+clean) and was verified via live-API scripts, but has not yet had a full browser click-through
+— tracked in `IMPLEMENTATION_LOG.md`'s Known Issues. `DEMO.md` covers fulfillment, billing and
+portal negotiation; the Phase 5 screens are not yet in its script (see its own changelog note).
 
 ## Remaining Work
 
-Ordered backlog. Everything below already has schema support — the data model was built for the
-full PRD in Phase 2, so none of it needs a migration for its core tables.
-
-All of Phase 3 (Core) is done, including customer portal negotiation. Everything below is
-🟡 Supporting scope — none of it blocks a demo of the Core flow.
-
-### Next up
-
-1. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
-2. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
-3. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
-   configurable at runtime, only the UI is missing
-4. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
+**All of PLAN.md Section 18's Core (🔴) and Supporting (🟡) scope is now complete.** Phase 3
+(Core) and every originally-listed Phase 5 (Supporting) item — deal health, reporting/export,
+admin config screens, product catalogue — are implemented, tested, and verified against the
+real running system. See `IMPLEMENTATION_LOG.md` 2026-09-06 "Complete Supporting Scope" for
+the full entry. Only 🟢 Bonus scope (multi-currency, multi-company — PLAN.md explicitly calls
+these optional) and the items below remain.
 
 ### Deferred deliberately
 

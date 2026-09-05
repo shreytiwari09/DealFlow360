@@ -3,15 +3,18 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    admin,
     approvals,
     auth,
     billing,
     catalog,
     dashboard,
+    dealhealth,
     fulfillment,
     health,
     portal,
     quotations,
+    reports,
 )
 
 api_router = APIRouter()
@@ -24,3 +27,6 @@ api_router.include_router(approvals.router)
 api_router.include_router(fulfillment.router)
 api_router.include_router(billing.router)
 api_router.include_router(portal.router)
+api_router.include_router(admin.router)
+api_router.include_router(dealhealth.router)
+api_router.include_router(reports.router)

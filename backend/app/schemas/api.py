@@ -522,3 +522,172 @@ class UpsellSuggestionResponse(BaseModel):
     list_price: Decimal
     is_promoted: bool
     margin_delta_percent: Decimal
+
+
+# --- Admin config: discount tiers & approval chains (PRD A3, Screen 18) ----
+
+
+class RoleOptionResponse(BaseModel):
+    """Just enough to populate a role picker — never the full RBAC row."""
+
+    id: int
+    code: str
+    name: str
+
+
+class DiscountTierResponse(BaseModel):
+    id: int
+    customer_tier: str
+    category_id: int
+    category_name: str
+    max_discount_percent: Decimal
+    is_active: bool
+
+
+class UpdateDiscountTierRequest(BaseModel):
+    max_discount_percent: Decimal = Field(ge=0, le=100)
+
+
+class CreateDiscountTierRequest(BaseModel):
+    customer_tier: str
+    category_id: int
+    max_discount_percent: Decimal = Field(ge=0, le=100)
+
+
+class ApprovalChainResponse(BaseModel):
+    id: int
+    min_score: Decimal
+    max_score: Decimal | None
+    required_role_id: int
+    required_role_name: str
+    required_role_code: str
+    step_order: int
+    label: str | None
+    is_active: bool
+
+
+class CreateApprovalChainRequest(BaseModel):
+    min_score: Decimal = Field(ge=0)
+    max_score: Decimal | None = Field(default=None, gt=0)
+    required_role_id: int
+    step_order: int = Field(ge=1)
+    label: str | None = Field(default=None, max_length=120)
+
+
+class UpdateApprovalChainRequest(BaseModel):
+    min_score: Decimal = Field(ge=0)
+    max_score: Decimal | None = Field(default=None, gt=0)
+    step_order: int = Field(ge=1)
+    label: str | None = Field(default=None, max_length=120)
+    is_active: bool = True
+
+
+# --- Admin config: product catalogue (PRD A2, Screens 16-17) ---------------
+
+
+class ProductCategoryResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: str | None
+    is_active: bool
+
+
+class CreateProductCategoryRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=255)
+
+
+class AdminProductResponse(BaseModel):
+    id: int
+    sku: str
+    name: str
+    description: str | None
+    category_id: int
+    category_name: str
+    unit: str
+    list_price: Decimal
+    cost_price: Decimal
+    tax_rate: Decimal
+    item_type: str
+    is_promoted: bool
+    is_active: bool
+
+
+class CreateProductRequest(BaseModel):
+    sku: str = Field(min_length=1, max_length=60)
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
+    category_id: int
+    unit: str = Field(default="unit", max_length=20)
+    list_price: Decimal = Field(ge=0)
+    cost_price: Decimal = Field(ge=0)
+    tax_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    item_type: str = Field(pattern="^(one_time|subscription)$")
+    is_promoted: bool = False
+
+
+class UpdateProductRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
+    category_id: int
+    unit: str = Field(default="unit", max_length=20)
+    list_price: Decimal = Field(ge=0)
+    cost_price: Decimal = Field(ge=0)
+    tax_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    is_promoted: bool = False
+    is_active: bool = True
+
+
+# --- Deal health (PRD B9) ---------------------------------------------------
+
+
+class DealHealthAlertResponse(BaseModel):
+    quotation_id: int
+    quote_number: str
+    customer_name: str
+    owner_name: str
+    is_stalled: bool
+    days_inactive: int
+    has_discount_anomaly: bool
+    discount_vs_rep_average: Decimal
+    has_delivery_slippage: bool
+    days_slipped: int
+    snapshot_at: datetime
+
+
+class DealHealthDashboardResponse(BaseModel):
+    stalled_count: int
+    anomaly_count: int
+    slippage_count: int
+    alerts: list[DealHealthAlertResponse]
+
+
+# --- Reporting (PRD A7) -----------------------------------------------------
+
+
+class ReportFiltersRequest(BaseModel):
+    date_from: date | None = None
+    date_to: date | None = None
+    owner_id: int | None = None
+    status: str | None = None
+    category_id: int | None = None
+
+
+class ReportRow(BaseModel):
+    quote_number: str
+    customer_name: str
+    owner_name: str
+    status: str
+    total_amount: Decimal
+    discount_amount: Decimal
+    blended_risk_score: Decimal
+    created_at: datetime
+
+
+class ReportResponse(BaseModel):
+    rows: list[ReportRow]
+    total_amount: Decimal
+    total_discount: Decimal
+    count: int

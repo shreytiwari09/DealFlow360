@@ -27,16 +27,15 @@ const NAV: NavEntry[] = [
   { to: "/fulfillment", label: "Fulfillment" },
   { to: "/subscriptions", label: "Subscriptions" },
   { to: "/invoices", label: "Invoices" },
-  { to: "/deal-health", label: "Deal Health", pending: true },
-  { to: "/reports", label: "Reports", pending: true, permission: "report.view" },
+  { to: "/deal-health", label: "Deal Health" },
+  { to: "/reports", label: "Reports", permission: "report.view" },
   {
     to: "/admin/discount-tiers",
     label: "Discount Tiers",
     section: "Configuration",
     permission: "config.manage",
-    pending: true,
   },
-  { to: "/admin/products", label: "Product Catalog", permission: "user.manage", pending: true },
+  { to: "/admin/products", label: "Product Catalog", permission: "config.manage" },
 ];
 
 export default function InternalShell() {

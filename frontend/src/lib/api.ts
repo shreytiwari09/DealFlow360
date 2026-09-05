@@ -126,12 +126,39 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
+/**
+ * Downloads a binary export (PDF/XLSX) and hands the browser a real file
+ * save via a temporary object URL — not a JSON response, so it bypasses
+ * `request()` entirely. Shares the same 401-retry logic since an export can
+ * just as easily race an access-token expiry as any other call.
+ */
+async function download(path: string, filename: string): Promise<void> {
+  let response = await raw(path);
+  if (response.status === 401) {
+    if (await refreshAccessToken()) response = await raw(path);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new ApiError(response.status, friendly(response.status, body?.detail));
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, payload?: unknown) =>
     request<T>(path, { method: "POST", body: JSON.stringify(payload ?? {}) }),
   put: <T>(path: string, payload: unknown) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(payload) }),
+  download,
 };
 
 // --- Types mirroring the backend DTOs ------------------------------------
@@ -479,4 +506,110 @@ export interface UpsellSuggestion {
   list_price: string;
   is_promoted: boolean;
   margin_delta_percent: string;
+}
+
+// --- Admin config: discount tiers & approval chains (Screen 18) -----------
+
+export interface RoleOption {
+  id: number;
+  code: string;
+  name: string;
+}
+
+export interface DiscountTierRow {
+  id: number;
+  customer_tier: string;
+  category_id: number;
+  category_name: string;
+  max_discount_percent: string;
+  is_active: boolean;
+}
+
+export interface ApprovalChainRow {
+  id: number;
+  min_score: string;
+  max_score: string | null;
+  required_role_id: number;
+  required_role_name: string;
+  required_role_code: string;
+  step_order: number;
+  label: string | null;
+  is_active: boolean;
+}
+
+// --- Admin config: product catalogue (Screens 16-17) -----------------------
+
+export interface ProductCategoryRow {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+}
+
+export interface AdminProduct {
+  id: number;
+  sku: string;
+  name: string;
+  description: string | null;
+  category_id: number;
+  category_name: string;
+  unit: string;
+  list_price: string;
+  cost_price: string;
+  tax_rate: string;
+  item_type: string;
+  is_promoted: boolean;
+  is_active: boolean;
+}
+
+// --- Deal health (Screen 14, PRD B9) ---------------------------------------
+
+export interface DealHealthAlert {
+  quotation_id: number;
+  quote_number: string;
+  customer_name: string;
+  owner_name: string;
+  is_stalled: boolean;
+  days_inactive: number;
+  has_discount_anomaly: boolean;
+  discount_vs_rep_average: string;
+  has_delivery_slippage: boolean;
+  days_slipped: number;
+  snapshot_at: string;
+}
+
+export interface DealHealthDashboard {
+  stalled_count: number;
+  anomaly_count: number;
+  slippage_count: number;
+  alerts: DealHealthAlert[];
+}
+
+// --- Reporting (Screen 15, PRD A7) -----------------------------------------
+
+export interface ReportRow {
+  quote_number: string;
+  customer_name: string;
+  owner_name: string;
+  status: string;
+  total_amount: string;
+  discount_amount: string;
+  blended_risk_score: string;
+  created_at: string;
+}
+
+export interface ReportResult {
+  rows: ReportRow[];
+  total_amount: string;
+  total_discount: string;
+  count: number;
+}
+
+export interface ReportFilters {
+  date_from?: string;
+  date_to?: string;
+  owner_id?: number;
+  status?: string;
+  category_id?: number;
 }

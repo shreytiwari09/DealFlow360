@@ -31,3 +31,10 @@ slowapi>=0.1.9,<1.0
 pydantic>=2.10,<3.0
 pydantic-settings>=2.7,<3.0
 email-validator>=2.2,<3.0
+
+# Reporting export (PRD A7). Adopted at the Phase 5 Section 0.5 checkpoint -
+# both pure Python, no system libraries needed in the Docker image (unlike
+# weasyprint, which needs Pango/Cairo). See PROJECT_CONTEXT.md's Important
+# Technical Decisions for the alternatives considered.
+openpyxl>=3.1,<4.0
+fpdf2>=2.7,<3.0

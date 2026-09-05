@@ -28,6 +28,11 @@ import InvoicesList from "./screens/InvoicesList";
 import InvoiceDetail from "./screens/InvoiceDetail";
 import PortalQuotationsList from "./screens/PortalQuotationsList";
 import PortalQuotationDetail from "./screens/PortalQuotationDetail";
+import DealHealthDashboard from "./screens/DealHealthDashboard";
+import ReportsScreen from "./screens/ReportsScreen";
+import AdminDiscountTiers from "./screens/AdminDiscountTiers";
+import AdminProductsList from "./screens/AdminProductsList";
+import AdminProductDetail from "./screens/AdminProductDetail";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -64,6 +69,11 @@ export default function App() {
             <Route path="/subscriptions/:id" element={<SubscriptionDetail />} />
             <Route path="/invoices" element={<InvoicesList />} />
             <Route path="/invoices/:id" element={<InvoiceDetail />} />
+            <Route path="/deal-health" element={<DealHealthDashboard />} />
+            <Route path="/reports" element={<ReportsScreen />} />
+            <Route path="/admin/discount-tiers" element={<AdminDiscountTiers />} />
+            <Route path="/admin/products" element={<AdminProductsList />} />
+            <Route path="/admin/products/:id" element={<AdminProductDetail />} />
           </Route>
 
           <Route element={<PortalShell />}>

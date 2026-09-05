@@ -3,10 +3,10 @@
 ## Current Objective
 Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.md Section 18), sequenced: 🔴 Core workflow fully working first, then 🟡 Supporting, then 🟢 Bonus only if ahead of schedule. Database and business-logic correctness are being treated as first-class judging criteria, not implementation afterthoughts.
 
-**Where we are right now:** Phase 1 (Foundation) is complete and validated. The blended risk
-score, the single-line Finance gate, the approval routing thresholds and the proration rule
-are all locked (see "Locked Business Rules" below), so **Phase 2 (Core Data Model) is
-unblocked and is the next task.**
+**Where we are right now:** Phases 1 (Foundation) and 2 (Core Data Model) are complete and
+validated. 30 tables are under Alembic migration control, six state machines are enforced in
+code, and the ERD is checked in at `docs/erd.md`. **Phase 3 (Core Business Workflow) is
+next**, starting with the blended risk engine, whose formula is already locked below.
 
 ## Product Understanding
 DealFlow360 is a self-governing B2B sales operations platform — a full quote-to-cash system, not a simple quote-to-invoice tool. Core value: automatic discount discipline (blended risk scoring), real-time multi-warehouse inventory awareness, reconciled one-time + recurring billing on a single order, and a live customer negotiation portal.
@@ -31,7 +31,8 @@ DealFlow360 is a self-governing B2B sales operations platform — a full quote-t
 backend/
   alembic/            Versioned migrations. env.py is async and pulls the DB URL
                       from app settings, never from alembic.ini (no credentials
-                      in committed config). versions/ is empty until Phase 2.
+                      in committed config).
+                      versions/809cac63fb15 - the whole initial schema.
   app/
     main.py           FastAPI app: lifespan, CORS allowlist, exception handlers,
                       v1 router mounted at /api/v1.
@@ -44,42 +45,77 @@ backend/
     db/
       base.py         DeclarativeBase + metadata naming convention + TimestampMixin.
       session.py      Async engine, bounded pool, get_session() with rollback.
-    models/           EMPTY — Phase 2. Every model must be imported in
-                      models/__init__.py or Alembic autogenerate will not see it.
+    models/           The full data model, 30 tables. enums.py holds every
+                      enumeration; the rest are grouped by domain (rbac,
+                      customer, catalog, policy, quotation, approval,
+                      inventory, billing, upsell, dealhealth, audit).
+                      Every model MUST be imported in models/__init__.py or
+                      Alembic autogenerate silently omits its table.
     schemas/          Pydantic response DTOs (health.py only so far).
-    services/         EMPTY — Phase 3 business logic.
+    services/         state_machine.py - transition tables for all six
+                      lifecycle entities, plus assert_transition(). Pure, no
+                      I/O. Phase 3 business logic joins it here.
     api/
       deps.py         SessionDep. Auth/permission dependencies land here in Phase 6.
       v1/router.py    Aggregate router; feature routers registered here.
       v1/endpoints/   health.py only so far.
-  tests/              Phase 1 foundation tests (deliberately run without a DB).
+  tests/              test_health.py (endpoints), test_state_machines.py
+                      (pure), test_db_constraints.py (runs against the real
+                      PostgreSQL schema, each test rolled back).
 frontend/
   src/App.tsx         Unstyled Phase 1 placeholder — replace entirely at Phase 8.
   src/lib/api.ts      Thin fetch client; base URL from VITE_API_BASE_URL.
-docs/                 ERD + architecture diagram — Phase 2 deliverable.
+docs/erd.md           ERD + architecture diagram + state machines.
+                      Doubles as the hackathon architecture deliverable.
+                      KEEP CURRENT when the schema changes.
 ```
 
-## Core Data Model (target schema — finalize during Phase 2, diagram as ERD)
+## Core Data Model (implemented in Phase 2 — diagrammed in docs/erd.md)
 
-**Status: not yet implemented.** `backend/app/models/` is empty; the only table in the database is `alembic_version`.
+**Status: implemented and under migration control.** 30 tables, 70 foreign keys, migration
+`809cac63fb15`. Diagrammed in `docs/erd.md`. The migration has been verified to apply from
+empty, downgrade fully back to empty, and produce an *empty* autogenerate diff afterwards
+(no drift between models and database).
 
 **Entities:** users, customers (tier), products (with variants), price_lists, discount_tiers (customer tier × category → max %), approval_chains, quotations, quotation_lines, warehouses, stock_levels, fulfillment_splits, backorders, subscription_plans, billing_schedules, proration_records, upsell_rules, deal_health_snapshots, approval_logs (audit trail).
 
 **Standards applied to every table:**
-- Audit columns: `created_at`, `updated_at`, `created_by` (`TimestampMixin` in `app/db/base.py` already provides the first two; `created_by` is added in Phase 2 once `users` exists so the FK can be declared properly)
+- Audit columns: `created_at`, `updated_at`, `created_by` — supplied by `AuditMixin` in `app/db/base.py`. `created_by` uses `use_alter=True` because it forms FK cycles (users→roles→users, users→customers→users) that CREATE TABLE ordering cannot satisfy
 - Archival, not hard delete, for master data (products, customers): `is_active` / `archived_at`
 - Explicit FK behavior (RESTRICT vs CASCADE) decided per relationship, not left as an ORM default
 - Indexes on all foreign keys and frequently filtered columns (customer_id, status, created_at)
 - CHECK constraints where meaningful (e.g., discount percentage within valid range)
 - A metadata naming convention is already configured, so constraints get stable names and can be altered/dropped by later migrations
 
-**Explicit state machines (document transitions, enforce in code, reject invalid moves):**
-- Quotation: `draft → pending_approval → approved → confirmed → fulfilled / cancelled`
-- Approval: `pending → approved / rejected / returned_for_revision`
-- Subscription: `active → modified → cancelled`
+**Explicit state machines** — all six enforced in `app/services/state_machine.py`; invalid
+transitions raise `InvalidStateTransition`. Full tables and diagrams in `docs/erd.md`.
+- Quotation: `draft → pending_approval → approved → rejected / sent → under_negotiation →
+  confirmed → fulfilled / cancelled` (**superset of the PLAN.md list — see Known Issues**)
+- Approval: `pending → approved / rejected / returned_for_revision` (all terminal)
+- Subscription: `active ↔ modified → cancelled`
 - Fulfillment: `pending → partially_fulfilled → fulfilled / backordered`
+- Backorder: `open → consolidated → fulfilled / cancelled`
+- Billing schedule: `scheduled → invoiced → paid / cancelled`
 
-**ERD status:** _(not yet created — required deliverable of Phase 2, kept current as schema evolves)_
+**ERD status:** `docs/erd.md` — current as of migration `809cac63fb15`. All 30 tables are
+covered, and all 10 Mermaid diagrams were machine-parsed to confirm they render.
+
+**Schema decisions worth knowing before touching it** (full reasoning in `docs/erd.md`):
+- Prices, costs and the applicable discount ceiling are **snapshotted onto `quotation_lines`**
+  at quoting time. Master data changes; an approved quotation must stay reproducible, and
+  `allowed_discount_percent` is what answers "what was the policy when this was approved?"
+- Approvals are **request → ordered steps**, not one flat row, because each step is a
+  different person, time and reason.
+- `approval_steps.required_role_id` is snapshotted from the chain, so reconfiguring policy
+  later cannot retroactively change who was supposed to approve a past deal.
+- FK default is **RESTRICT**; CASCADE appears only where a child has no independent existence
+  (lines, variants, approval steps, splits, proration records). Nothing cascades into
+  quotations, approvals or audit records.
+- `stock_levels` uses a **`NULLS NOT DISTINCT`** unique index. Without it PostgreSQL would
+  allow duplicate stock rows whenever `variant_id` is NULL, and the warehouse split would
+  under-count available stock.
+- `audit_logs` deliberately has no `updated_at`/`created_by` — an audit row is never updated,
+  and `user_id` already names the actor.
 
 ## Locked Business Rules
 
@@ -240,7 +276,8 @@ Base prefix: `/api/v1`. Implemented so far:
 | GET | `/api/v1/health` | Liveness. Does not touch the database. |
 | GET | `/api/v1/health/ready` | Readiness. Returns 503 (not 500) when the DB is unreachable, so "not ready yet" is distinguishable from "broken". |
 
-Feature routers are registered in `app/api/v1/router.py` as they are built.
+Feature routers are registered in `app/api/v1/router.py` as they are built. No business
+endpoints exist yet — Phase 2 delivered the data model, not the API surface.
 
 ## Authentication & Authorization
 **Reference:** SECURITY_SPEC.md is authoritative for security mechanics — it already uses the correct PRD roles directly, no remapping needed.
@@ -284,6 +321,9 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
 | **Async SQLAlchemy 2 + `asyncpg`** (Phase 1 checkpoint) | FastAPI is async; mixing a sync driver into async endpoints blocks the event loop, which is the classic silent-performance footgun. Row locking (`SELECT … FOR UPDATE`) for stock deduction and optimistic locking on approvals both work identically in async | Sync SQLAlchemy + `psycopg2` with `def` endpoints running in a threadpool (simpler, fewer sharp edges) | Async requires `greenlet`, an async Alembic `env.py`, and care that no blocking call sneaks into a request path. Accepted because the two hardest correctness requirements (stock locking, concurrent approvals) are unaffected either way |
 | **Vite as the React toolchain** (Phase 1 checkpoint) | Current standard for a React SPA; instant dev server and HMR matter over a 24h build | Create React App (deprecated), Next.js (already rejected — merges backend into JS) | Needs `usePolling` for HMR through a Windows bind mount (configured) |
 | **Python 3.12 in the container** (not 3.13/3.14) | Every dependency ships prebuilt wheels for 3.12; avoids a compiler stall mid-hackathon. Host has 3.14, which is why the container pin is explicit | Match the host's 3.14 | Slightly behind latest; irrelevant here |
+| **Enums as VARCHAR + named CHECK, not native PG ENUM** (Phase 2 checkpoint) | `ALTER TYPE ... ADD VALUE` cannot always run in a transaction and is awkward to reverse in a downgrade. PLAN.md Section 7 expects the schema to keep evolving, and a CHECK constraint is ordinary DDL that Alembic can drop and recreate | Native PostgreSQL ENUM types | Slightly less "proper" typing at the database level; the database still rejects invalid values, so nothing is lost in enforcement |
+| **Snapshot pricing and discount ceilings onto quotation lines** (Phase 2) | An approved quotation must remain reproducible after master data changes, and an auditor must be able to see what the policy was at approval time | Join to live master data on read | Denormalised data that must be written correctly once; the alternative silently produces numbers that disagree with what the customer signed |
+| **Optimistic locking (`version`) on quotations** (Phase 2) | Two managers approving the same quote concurrently would otherwise last-write-win silently. SQLAlchemy raises `StaleDataError` instead | Pessimistic `SELECT … FOR UPDATE` on every read | Callers must handle a conflict error; far cheaper than holding row locks across a user's think-time |
 | **Secrets have no in-code defaults** | `POSTGRES_PASSWORD` / `JWT_SECRET_KEY` are required settings, so the app fails loudly rather than silently running on a placeholder | Defaults for developer convenience | A missing `.env` is now a startup error — which is the intended behaviour |
 
 ### Section 0.5 Technology Evaluation Checkpoints (log)
@@ -294,6 +334,24 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
    - **`uv`** (Astral) instead of `pip` + `requirements.txt`. *Problem it would solve:* Docker rebuild latency during a 24h build. *Why the current stack is enough:* pip plus Docker layer caching keeps rebuilds acceptable, and dependencies change rarely after Phase 2. *What breaks without it:* nothing — only slower rebuilds. **Rejected**; revisit only if rebuild time becomes a felt cost.
    - **A Redis-backed rate limiter** for the login endpoint required by SECURITY_SPEC.md Section 5. *Why deferred:* login does not exist until Phase 3/6, and at single-instance demo scale an in-process limiter is sufficient and has no extra failure mode. **Deferred to the Phase 6 checkpoint**, where it will be evaluated against a real endpoint.
 3. Two in-stack architectural decisions were made and recorded in the table above (async SQLAlchemy, Vite) — these are choices within the sanctioned stack, not new dependencies.
+
+**Phase 2 — Core Data Model.** *Outcome: no new technology adopted.*
+1. Anything the current stack cannot cleanly satisfy? **No.** SQLAlchemy 2 plus Alembic covers
+   the whole model, including the CHECK constraints, partial/`NULLS NOT DISTINCT` indexes and
+   optimistic locking the phase needed.
+2. Candidates genuinely considered:
+   - **`eralchemy2` / `sqlalchemy-schemadisplay`** to generate the ERD from metadata.
+     *Problem it would solve:* keeping the diagram in sync with the schema automatically.
+     *Why rejected:* both need Graphviz as a system dependency in the image, and the generated
+     output is a raw box-and-line dump with no room for the "why" annotations that actually
+     earn marks. Hand-written Mermaid renders natively on GitHub, is reviewable in a diff, and
+     the sync risk is handled instead by a check that every table appears in the doc.
+   - **`python-statemachine`** for the six lifecycle machines. *Problem it would solve:*
+     declarative transitions with callbacks. *Why rejected:* the transition tables are ~60
+     lines of plain dicts, dependency-free, trivially unit-testable, and far easier to explain
+     in a viva than a DSL. Section 20 applies.
+3. One in-stack decision recorded in the table above: enums as VARCHAR + CHECK rather than
+   native PostgreSQL ENUM.
 
 ## Known Constraints
 - 3-person team, 24-hour hackathon
@@ -307,6 +365,18 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
 **Resolved 2026-09-05** — blended risk score formula, the single-line Finance gate,
 approval routing thresholds, and proration basis/rounding are all confirmed and written up
 under "Locked Business Rules" above. **Phase 2 is no longer blocked.**
+
+**Assumption made and flagged for confirmation (PLAN.md Section 0.6):**
+- **The quotation state machine is a deliberate SUPERSET of the list in PLAN.md Section 7.**
+  PLAN gives `draft → pending_approval → approved → confirmed → fulfilled / cancelled`.
+  Three further states were added because the PRD itself requires them, and PLAN.md Section 1
+  says the PRD wins on *what* to build:
+    * `sent` and `under_negotiation` — PRD B8 requires the customer portal to display
+      "Sent, Under Negotiation, Confirmed" as the quotation status.
+    * `rejected` — PRD A7 requires reporting to filter by "pending, approved, or rejected
+      quotations", which needs a quotation-level state, not just an approval-record state.
+  Full transition table in `docs/erd.md` and `app/services/state_machine.py`. **Please confirm
+  this reading**; it is cheap to change now and expensive once Phase 3 depends on it.
 
 **Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.
@@ -334,10 +404,38 @@ under "Locked Business Rules" above. **Phase 2 is no longer blocked.**
 - 3 backend tests pass; `ruff check` and `ruff format --check` are clean
 - Frontend dev server serves, `tsc --noEmit` is clean, and `npm run build` produces a production bundle
 
-**Phase 2 onward: not started.**
+**Phase 2 (Core Data Model): complete and validated.**
+- 30 tables covering every Core, Supporting and Bonus-if-time PRD feature, under Alembic
+  migration control as revision `809cac63fb15`
+- Audit columns on every table; archival flags on all master data; explicit FK delete
+  behaviour on all 70 foreign keys; CHECK constraints on percentages, quantities, money,
+  date ordering and cross-column invariants
+- Six state machines enforced in `app/services/state_machine.py`, with invalid transitions
+  raising `InvalidStateTransition`
+- Migration verified to apply from empty, downgrade fully back to empty, and leave **no
+  drift** (a second autogenerate produces an empty migration)
+- 69 tests pass: state machine transitions and rejections, transition-table completeness,
+  and database constraints proven against real PostgreSQL
+- ERD checked in at `docs/erd.md`, all 10 diagrams machine-parsed
+
+**Phase 3 onward: not started.**
 
 ## Remaining Work
-Mirrors PLAN.md Section 18. Nothing in the 🔴 Core / 🟡 Supporting / 🟢 Bonus feature set is implemented yet — Phase 1 delivered scaffolding only. Next: Phase 2 (Core Data Model).
+Mirrors PLAN.md Section 18. No 🔴 Core / 🟡 Supporting / 🟢 Bonus *behaviour* is implemented
+yet — Phases 1 and 2 delivered the foundation and the schema that every feature sits on.
+
+Next: **Phase 3 (Core Business Workflow)**, in the order PLAN.md Section 8 gives:
+1. Login for all five roles
+2. Quotation builder (lines, discounts, live totals and margin)
+3. Blended risk engine — formula already locked, see Locked Business Rules #1
+4. Approval routing — reads `approval_chains`, applies the single-line gate
+5. Multi-warehouse split + backorders
+6. Hybrid billing + proration
+7. Customer portal negotiation with automatic re-approval
+8. Audit trail on every approval/rejection/edit
+
+Seed data (roles, permissions, the five demo users, discount tiers, the three approval-chain
+rows, warehouses, products) is a prerequisite for step 1 and does not exist yet.
 
 ## Do Not Change / Do Not Break
 - **Blended risk score formula — now locked.** See Locked Business Rules #1. Do not let a

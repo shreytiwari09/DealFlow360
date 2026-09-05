@@ -29,3 +29,6 @@ Thumbs.db
 
 # Postgres volume (if ever bind-mounted)
 pgdata/
+
+# TypeScript incremental build info
+*.tsbuildinfo

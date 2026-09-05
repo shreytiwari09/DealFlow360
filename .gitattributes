@@ -1,0 +1,7 @@
+# Normalise line endings: the repo stores LF, Windows checkouts get native.
+# Files that run inside Linux containers must be LF or they break at runtime.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary

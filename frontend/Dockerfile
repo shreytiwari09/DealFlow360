@@ -6,8 +6,10 @@ FROM node:22-alpine
 WORKDIR /app
 
 # Install deps first so source edits do not invalidate the install layer.
-COPY package.json ./
-RUN npm install
+# npm ci (not install) so the committed lockfile is authoritative and builds
+# are reproducible across the team.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 

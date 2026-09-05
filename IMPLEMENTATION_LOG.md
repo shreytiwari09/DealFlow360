@@ -473,3 +473,113 @@ arrives — all verified against the real database and the real UI, not assumed.
 still stands: `quotation_lines` requires a subscription line to carry a plan, but the builder
 has no plan picker yet, so a subscription product cannot currently be added to a quote — that
 gap needs closing before proration logic has anything to operate on.
+
+---
+
+## 2026-09-06 — Full Document Audit: Security Checklist, State-Machine Guards, Stale Docs
+
+### Goal
+User asked to re-analyze all the source-of-truth documents against the current codebase and
+fix whatever bugs that turns up, rather than continuing straight to the next feature. Treated
+as a proper audit pass: check every claim, don't just re-read and assume.
+
+### Implemented
+
+**1. Hunted for more instances of the bug class already found twice** (auth.py's
+`_USER_LOADS`, `generate_fulfillment`'s missing refresh). Grepped every direct `.status = `
+assignment across the service and endpoint layers and checked each one against a preceding
+`assert_transition()` call.
+
+Found one real gap: `ApprovalRequest.status` was set directly in `approvals.py`'s `decide()`
+endpoint (three branches — approved/rejected/returned) with no `assert_transition()` call,
+unlike the `ApprovalStep.status` change three lines above it and the `Quotation.status`
+change below it in the same function. Not a *live* bug — by the time that code runs,
+`request.status` is provably `PENDING` (checked earlier in the same function), and all three
+outcomes are legal from `PENDING`. But it is exactly the pattern the "Do Not Change" rule
+written after the last bug warns about: correct by circumstance, not provably guarded. Fixed
+by factoring the three branches through one `_finish_request()` helper that calls
+`assert_transition("Approval", ...)` before writing the status, matching every other status
+change in the codebase.
+
+Checked every other direct `.status =` write (`fulfillment.py` x4, `quotations.py` x2): all
+were already correctly preceded by `assert_transition()`.
+
+**2. Confirmed the bare-`session.add()`-without-refresh pattern is fully closed.** All three
+functions in `fulfillment.py` that add child rows via `session.add()` rather than
+`parent.children.append()` (`generate_fulfillment`, `override_fulfillment`,
+`consolidate_backorder`) correctly call `session.refresh(fulfillment, attribute_names=[...])`
+before returning. Checked `approval.py`'s `raise_approval_request` and `quotation.py`'s line
+replacement too — both are safe because neither returns the ORM parent object for a caller to
+read a stale collection off of; callers re-fetch with `load_quotation()`/`load_fulfillment()`
+afterward.
+
+**3. Grepped for locked-rule violations.** No bare `round()` calls and no `float()` used for
+money/percentage arithmetic anywhere in `app/`. The `Decimal` + `ROUND_HALF_UP` rule (Locked
+Business Rules #3) holds everywhere it applies.
+
+**4. Full item-by-item audit of SECURITY_SPEC.md Section 11's pre-submission checklist**,
+verified against the actual code rather than assumed from memory:
+
+| Item | Status | Evidence |
+|---|---|---|
+| Passwords Argon2id, never plaintext/logged | ✅ | `core/security.py` |
+| JWT algorithm whitelisted, `alg:none` rejected | ✅ | `core/tokens.py` — `algorithms=` is a required `jwt.decode()` argument |
+| Access tokens short-lived, refresh rotated | ✅ | 15 min access; `rotate_refresh_token()` with reuse detection |
+| JWT payload has no PII/secrets | ✅ | payload is `sub`/`jti`/`type`/`iat`/`exp`/`iss`/`aud` only |
+| `exp`/`iss`/`aud` validated | ✅ | `jwt.decode(..., issuer=, audience=, options={"require": [...]})` |
+| Login/reset/MFA rate-limited | ⚠️ partial | Login + refresh limited via slowapi; reset and MFA are not built at all (outside PRD scope) — nothing to rate-limit yet, recorded rather than silently checked off |
+| All 5 roles enforced server-side | ✅ | Permission-based via seeded `role_permissions`, checked in `api/deps.py` |
+| Resource-ownership checked on quotation/approval endpoints | ✅ | `assert_can_view/edit_quotation` used consistently — **also confirmed for the newer fulfillment endpoints during this audit**, which hadn't been explicitly checked against this checklist before |
+| No client-supplied `role`/`ownerId`/`customerId` trusted | ✅ | `owner_id` always derived from `user.id`; signup ignores any `role` in the body |
+| All approval/rejection/edit actions audited | ✅ | confirmed for quotations, approvals, and fulfillment actions |
+| CORS explicit allowlist | ✅ | two explicit origins in `.env`, no wildcard |
+| No secrets committed | ✅ | `.env` gitignored, only `.env.example` tracked |
+| DB queries parameterized/ORM-only | ✅ | grepped `app/` — no raw string SQL anywhere |
+| API errors don't leak internals | ✅ | generic handlers in `core/errors.py`, covered by `test_error_response_does_not_leak_internals` |
+
+**13 of 14 fully verified, 1 partial for a reason (feature doesn't exist yet), 0 failures.**
+This had never actually been checked off anywhere despite PROJECT_CONTEXT.md claiming it was
+"tracked in IMPLEMENTATION_LOG.md" — that claim was itself stale until this entry.
+
+**5. Fixed two stale documentation claims in PROJECT_CONTEXT.md:**
+- The warehouse selection tie-break was still listed under "Still open... proceeding on this
+  assumption," despite being fully implemented and unit-tested as part of the fulfillment
+  feature. Moved to "Resolved."
+- The JWT security checklist reference pointed at a tracking entry that never existed until
+  this one.
+
+### Files Changed
+- `backend/app/api/v1/endpoints/approvals.py` (guarded `ApprovalRequest.status` transitions)
+- `PROJECT_CONTEXT.md` (two stale-claim fixes)
+- `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+- Decision: audit by grepping for the exact mechanical pattern of two already-found bugs
+  (unguarded status writes; bare-add-without-refresh), rather than re-reading files hoping to
+  spot something.
+- Reason: "read the docs again" does not reliably surface the same class of bug a second
+  time; a targeted, repeatable search across the whole codebase does, and did — it found a
+  real instance the first two passes missed.
+
+### Validation
+- Tests: **145 backend tests still pass** after the `approvals.py` fix — no regression.
+- Re-ran the full 56-check API verification script (login, PRD-example approval, two-step
+  Manager+Finance chain, reject, return-for-revision, security/IDOR checks) against a freshly
+  reset seed, specifically because the fix touched the exact function handling all of those
+  outcomes. All 56 still pass.
+- `ruff check .` clean.
+
+### Known Issues
+No new ones. The rate-limiting partial (item 6 above) is a scope statement, not a defect —
+password reset and MFA are not PRD requirements for this build.
+
+### Current State
+No functional behaviour changed for any user-visible flow — every one of the transitions this
+audit touched was already reachable only via the paths the state machine allows. What changed
+is that those paths are now provably guarded rather than incidentally correct, which is the
+exact standard `state_machine.py` was built to (PLAN.md Section 7: "invalid transitions must
+be rejected, not just unused"). Documentation now says only things that are currently true.
+
+### Next Recommended Step
+Unchanged: hybrid billing + proration (PRD B7), blocked first on adding a subscription-plan
+picker to the quotation builder so a subscription line can be created at all.

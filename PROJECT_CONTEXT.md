@@ -464,7 +464,11 @@ Still to do in Phase 6:
 - Rate limiting on login; generic auth failure messages (no user enumeration)
 - All approval/rejection/edit actions logged (user, timestamp, reason) — both a security and a PRD-explicit requirement
 
-**JWT security checklist:** see SECURITY_SPEC.md Section 11 — complete before final submission (tracked in IMPLEMENTATION_LOG.md).
+**JWT security checklist:** see SECURITY_SPEC.md Section 11. **Audited 2026-09-06** (see
+IMPLEMENTATION_LOG.md that date for the item-by-item pass): 13 of 14 items verified directly
+against the code, not assumed. The one partial: login and refresh are rate-limited; password
+reset and MFA are not built at all (outside PRD scope), so there is nothing there yet to
+rate-limit — not a violation, but recorded rather than silently checked off.
 
 ## Redis / Caching
 Not used. Considered and rejected at the Phase 1 checkpoint (see decisions table). Only added if a Section 0.5 technology-evaluation checkpoint surfaces a real, measured bottleneck — document justification here if that happens.
@@ -559,17 +563,18 @@ machine already implemented — `under_negotiation`. FRONTEND.md Section 18's no
 formula is "not yet locked" is stale and has been annotated in place; the formula, gate, bands
 and ceiling matrix are all locked here.
 
+**Resolved 2026-09-06 — the warehouse tie-break assumption is now implemented, not just
+proposed.** `compute_split()` in `app/services/fulfillment.py` orders candidates by lowest
+`shipping_cost_weight`, then highest available stock, then lowest `warehouse_id`. Verified by
+dedicated unit tests for each tiebreak level independently, and confirmed deterministic against
+real seeded data across repeated runs. No longer "proceeding on an assumption" — it is built,
+tested, and documented in Locked Business Rules #7.
+
 **Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.
   Specifically: how many days of inactivity makes a quote "stalled", and how far above a
   rep's own historical average a discount must sit to count as an anomaly. Neither affects
   the Phase 2 schema (both are configuration rows), so this can wait.
-- **Warehouse selection tie-breaking rule not yet confirmed** — Phase 3 step 5. **Proceeding
-  on this assumption unless told otherwise:** order candidate warehouses by lowest
-  `shipping_cost_weight`, then by highest available stock (so fewer shipments result), then by
-  lowest `warehouse_id` as a final deterministic tiebreak. That last key matters more than it
-  looks — without it the split is non-deterministic across runs, and a demo that produces a
-  different split each time is worse than a suboptimal one. Does not affect the schema.
 - **Customer portal login method** — PRD A1 offers "magic link, or email and password".
   **Proceeding with email + password**, consistent with Locked Business Rules #5 (portal
   accounts are Admin-created) and avoiding token issuance and delivery. Magic link remains

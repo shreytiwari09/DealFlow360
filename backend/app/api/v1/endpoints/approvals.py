@@ -280,24 +280,34 @@ async def decide(
         if s.status == ApprovalStatus.PENDING and s.step_order > step.step_order
     ]
 
+    def _finish_request(new_status: ApprovalStatus) -> None:
+        """Transition the REQUEST's own status, validated the same way the
+        step's status just was above. `request.status` is guaranteed PENDING
+        here (checked earlier in this function), so this cannot fail in
+        practice - but "cannot fail in practice" is exactly the situation the
+        Backorder bug (see IMPLEMENTATION_LOG.md 2026-09-06) was in too, and
+        the whole point of state_machine.py is that a transition is REJECTED,
+        not merely unexercised, if it were ever wrong.
+        """
+        assert_transition("Approval", ApprovalStatus(request.status), new_status)
+        request.status = new_status
+        request.completed_at = now
+
     if outcome is ApprovalStatus.APPROVED and remaining:
         # Chain continues; the quotation stays pending for the next approver.
         action = AuditAction.DISCOUNT_APPROVED
         target_status = None
     elif outcome is ApprovalStatus.APPROVED:
-        request.status = ApprovalStatus.APPROVED
-        request.completed_at = now
+        _finish_request(ApprovalStatus.APPROVED)
         action = AuditAction.DISCOUNT_APPROVED
         target_status = QuotationStatus.APPROVED
     elif outcome is ApprovalStatus.REJECTED:
-        request.status = ApprovalStatus.REJECTED
-        request.completed_at = now
+        _finish_request(ApprovalStatus.REJECTED)
         _cancel_remaining(request, step)
         action = AuditAction.DISCOUNT_REJECTED
         target_status = QuotationStatus.REJECTED
     else:
-        request.status = ApprovalStatus.RETURNED_FOR_REVISION
-        request.completed_at = now
+        _finish_request(ApprovalStatus.RETURNED_FOR_REVISION)
         _cancel_remaining(request, step)
         action = AuditAction.DISCOUNT_RETURNED_FOR_REVISION
         target_status = QuotationStatus.DRAFT

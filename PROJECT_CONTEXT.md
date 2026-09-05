@@ -258,8 +258,101 @@ proration =                     400.02
   dispute unanswerable.
 - A downgrade yields a negative proration, which becomes the credit note PRD B7 requires.
 
+### 4. Order-Level Discount — LOCKED
+
+PRD B3 offers "line level or order level discounts", but an order-level discount has no
+per-line ceiling of its own to breach. Confirmed resolution: **an order-level discount is
+distributed across the lines, not scored separately.**
+
+Applying `X%` at order level writes `X%` into every line's `discount_percent`. Because each
+line then carries the same percentage, the discount *amount* is automatically proportional to
+line value — "uniform percentage" and "pro-rata by value" are the same operation here. The
+risk formula in #1 is unchanged.
+
+**Applying an order-level discount OVERWRITES existing per-line discounts.** There is exactly
+one discount number per line, always; the rep may re-adjust individual lines afterwards.
+Stacking was rejected: it makes "what discount is this line actually at" ambiguous for both
+the risk score and the audit trail, and edit history is already covered by `audit_logs`, so
+stacking buys no traceability it does not already have.
+
+> **Phase 3/4 builder requirement:** when an order-level discount is about to overwrite
+> manually-set line discounts, the builder must warn the user before applying. Cheap to do and
+> it stops the overwrite from being a silent surprise.
+
+**Why distribution and not a separate order-level check against the tier cap:** the
+alternative reopens the precise loophole the blended score exists to close. A Gold customer
+with a 12% order discount passes a 15% tier cap while the thin-margin Services line sits
+2 points over its own 10% ceiling and nobody ever sees it — worse than the naive case,
+because it bypasses line limits entirely.
+
+Worked check — Gold customer, Hardware ceiling 15, Services ceiling 10, 12% at order level:
+
+| Line | List value | Applied | Ceiling | Excess |
+|---|---|---|---|---|
+| Laptop (Hardware) | 100,000 | 12% | 15% | 0 |
+| Setup Service (Service) | 20,000 | 12% | 10% | 2 |
+
+`score = (0 × 100000 + 2 × 20000) / 120000 = 0.33` → greater than 0 → Sales Manager. The
+Services breach is still caught.
+
+### 5. Account Creation — LOCKED
+
+**Public signup exists and always creates a Sales Rep.** `POST /api/v1/auth/signup` assigns
+`sales_rep` unconditionally and **never reads a role from the request body**. Any `role`,
+`role_id`, `customer_id` or privilege field in the payload is ignored, not rejected — this is
+SECURITY_SPEC.md Section 8's mass-assignment case implemented literally ("a profile update
+must not silently allow `{"role": "Admin"}`").
+
+Role changes go through `PATCH /api/v1/admin/users/{id}/role`, which requires the
+`user.manage` permission and writes `ROLE_CHANGED` to `audit_logs`. That endpoint is not extra
+scope — Admin's "user/role management" duty in the PRD role list requires it regardless, so
+signup reuses machinery already being built.
+
+This satisfies PRD A1 ("Internal users can sign up and log in") and PRD Section 5's opening
+step ("Sales rep signs up (first time) or logs in") literally, with no privilege-escalation
+path.
+
+**Consequence worth knowing — customer portal accounts are NOT self-service.** A portal user
+needs `users.customer_id` pointing at a `customers` row, and signup cannot set that (it
+ignores client-supplied `customer_id` by the rule above). Portal accounts are therefore
+created by an Admin. This is the correct outcome: self-signup must never be able to attach
+itself to an existing customer's quotations.
+
+> **Documented limitation, deliberately accepted for the hackathon.** Unrestricted public
+> signup means anyone can obtain a `sales_rep` account and reach the internal workspace — an
+> empty one (they own no quotations, and ownership checks are enforced server-side), but they
+> would still see the product catalogue. Production would gate this behind an email-domain
+> allowlist or admin activation. Recorded here so it is a known trade-off rather than a hole,
+> and it belongs in the "what we would build next" deliverable.
+
+### 6. Discount Ceiling Matrix — LOCKED (seed data)
+
+`discount_tiers` is seeded with the full (customer tier × product category) grid below.
+Graduated by margin: Hardware sits at the tier cap, Services is stricter, Subscriptions
+strictest.
+
+| Ceiling % | Bronze | Silver | Gold |
+|---|---|---|---|
+| **Hardware** | 5 | 10 | 15 |
+| **Services** | 3 | 7 | 10 |
+| **Subscriptions** | 2 | 5 | 8 |
+
+Chosen because it reproduces the PRD's own worked example exactly (Gold + Hardware = 15,
+Gold + Services = 10, per PRD Section 10) **and** makes "category ceilings differ" visible
+across two rows rather than one. That matters for the viva: when a judge asks why the score is
+not simply a per-order cap, a gradient demonstrates the answer where a single exception only
+hints at it.
+
+Both demo paths are reachable from this one seed:
+- **Manager only** — Laptop at 12% (within 15) plus Setup Service at 18% (8 points over 10).
+  The PRD's example verbatim.
+- **Manager then Finance** — one Hardware line at 35% is 20 points over its 15% ceiling, which
+  trips the single-line gate in #2 (`> 15`) regardless of the blended score.
+
+These are rows, not constants: an Admin can retune any cell at runtime (PRD A3).
+
 ## Core Workflows
-1. Rep builds quotation → adds lines → applies discounts
+1. Rep builds quotation → adds lines → applies discounts (line-level, or order-level distributed onto every line — see Locked Business Rules #4)
 2. Blended risk score computed live across all lines (**formula locked — see Locked Business Rules #1**)
 3. Threshold exceeded → auto-routes to Manager (and Finance on the score band or the single-line gate — see Locked Business Rules #2)
 4. Approved → stock deducted/split across warehouses; backorder created if insufficient
@@ -366,26 +459,34 @@ Simple async/scheduled task (no queue infra) for stalled-deal detection on the d
 approval routing thresholds, and proration basis/rounding are all confirmed and written up
 under "Locked Business Rules" above. **Phase 2 is no longer blocked.**
 
-**Assumption made and flagged for confirmation (PLAN.md Section 0.6):**
-- **The quotation state machine is a deliberate SUPERSET of the list in PLAN.md Section 7.**
-  PLAN gives `draft → pending_approval → approved → confirmed → fulfilled / cancelled`.
-  Three further states were added because the PRD itself requires them, and PLAN.md Section 1
-  says the PRD wins on *what* to build:
-    * `sent` and `under_negotiation` — PRD B8 requires the customer portal to display
-      "Sent, Under Negotiation, Confirmed" as the quotation status.
-    * `rejected` — PRD A7 requires reporting to filter by "pending, approved, or rejected
-      quotations", which needs a quotation-level state, not just an approval-record state.
-  Full transition table in `docs/erd.md` and `app/services/state_machine.py`. **Please confirm
-  this reading**; it is cheap to change now and expensive once Phase 3 depends on it.
+**Confirmed 2026-09-05 — the quotation state-machine superset stands.** PLAN.md Section 7
+specifies six states; the implementation has nine. `sent` and `under_negotiation` come from
+PRD B8 (portal status display, and the state the automatic re-approval trigger fires from),
+`rejected` from PRD A7's reporting filter. PLAN.md Section 1 gives the PRD precedence on
+*what* to build, so these are direct implementations of named requirements, not scope creep.
+
+Reverting would also be *worse* data modelling, not stricter plan-adherence: a real quotation
+state would become a derived flag, and rejection reporting would depend on joining
+`approval_requests` and picking the latest row per quotation. Recorded here so a later session
+does not "fix" the discrepancy against PLAN.
 
 **Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.
   Specifically: how many days of inactivity makes a quote "stalled", and how far above a
   rep's own historical average a discount must sit to count as an anomaly. Neither affects
   the Phase 2 schema (both are configuration rows), so this can wait.
-- **Warehouse selection tie-breaking rule not yet defined** — blocks Phase 3 step 5. When
-  two warehouses can equally satisfy a line: lowest shipping-cost weight, then highest
-  remaining stock, then lowest warehouse id? Does not affect the schema either.
+- **Warehouse selection tie-breaking rule not yet confirmed** — Phase 3 step 5. **Proceeding
+  on this assumption unless told otherwise:** order candidate warehouses by lowest
+  `shipping_cost_weight`, then by highest available stock (so fewer shipments result), then by
+  lowest `warehouse_id` as a final deterministic tiebreak. That last key matters more than it
+  looks — without it the split is non-deterministic across runs, and a demo that produces a
+  different split each time is worse than a suboptimal one. Does not affect the schema.
+- **Customer portal login method** — PRD A1 offers "magic link, or email and password".
+  **Proceeding with email + password**, consistent with Locked Business Rules #5 (portal
+  accounts are Admin-created) and avoiding token issuance and delivery. Magic link remains
+  possible later; no schema change was made for or against it.
+- **Demo currency** — the schema defaults `currency` to `INR` on customers, price lists and
+  quotations. Say if the demo should present something else; it is a seed-data change.
 
 **Missing source documents:**
 - `DealFlow360_PRD_Merged.md` is named by PLAN.md as authoritative for feature scope, but is not present in the repository. `DealFlow360.pdf` was supplied in conversation and is the original source; it has not been committed. Ask the user to add both to `docs/`.
@@ -444,6 +545,12 @@ rows, warehouses, products) is a prerequisite for step 1 and does not exist yet.
 - **The single-line Finance gate (`max(line_excess) > 15`) is a real, separate rule.** It
   overrides the score band and must not be folded into the blended score
 - **Approval score bands live in `approval_chains` rows, not in code.** Do not hardcode them
+- **No endpoint may read `role`, `role_id`, `owner_id` or `customer_id` from a client
+  payload.** Signup ignores them and always assigns `sales_rep`; everything else derives them
+  from authenticated server-side context — see Locked Business Rules #5
+- **An order-level discount is distributed onto the lines and overwrites them, never scored
+  separately and never stacked.** Scoring it against the tier cap alone reopens the loophole
+  the blended score exists to close
 - **Proration uses `Decimal` + explicit `ROUND_HALF_UP`.** Never `float`, never Python's
   built-in `round()`, which is banker's rounding and gives different answers
 - Server-side role + resource-ownership enforcement — never move checks to frontend-only

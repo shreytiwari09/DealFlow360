@@ -439,3 +439,74 @@ class RecordPaymentRequest(BaseModel):
     method: str = Field(pattern="^(bank_transfer|card|cash|cheque|other)$")
     reference: str | None = Field(default=None, max_length=120)
     notes: str | None = Field(default=None, max_length=2000)
+
+
+# --- Customer portal (PRD B8, FRONTEND.md Screen 11) -----------------------
+#
+# Separate models, not a reuse of the internal ones with fields blanked out.
+# FRONTEND.md Screen 11: "must never expose any internal-only control, data
+# field, or navigation item — no discount limits, no other customers' data, no
+# internal audit trail, no role/permission info." A separate model makes that
+# a property of the type rather than of whoever remembers to blank a field:
+# there is no `allowed_discount_percent`, `line_excess_points`, `margin_*`,
+# `owner_name` or `blended_risk_score` here to leak in the first place.
+
+
+class PortalLineResponse(BaseModel):
+    line_number: int
+    product_name: str
+    quantity: Decimal
+    unit_list_price: Decimal
+    discount_percent: Decimal
+    line_total: Decimal
+
+
+class PortalCommentResponse(BaseModel):
+    """One row of Screen 11's comment table, sourced from the audit trail."""
+
+    created_at: datetime
+    author_name: str | None
+    message: str
+
+
+class PortalQuotationSummaryResponse(BaseModel):
+    """Row shape for the portal's "My Quotations" list."""
+
+    id: int
+    quote_number: str
+    status: str
+    total_amount: Decimal
+    currency: str
+    updated_at: datetime
+    valid_until: date | None
+
+
+class PortalQuotationDetailResponse(PortalQuotationSummaryResponse):
+    customer_name: str
+    subtotal_amount: Decimal
+    discount_amount: Decimal
+    tax_amount: Decimal
+    lines: list[PortalLineResponse]
+    comments: list[PortalCommentResponse]
+    # Whether the two PRD B8 buttons should be live. The backend re-checks on
+    # every write regardless of what this says.
+    can_negotiate: bool
+
+
+class PortalNegotiateRequest(BaseModel):
+    """`Submit Request` — a comment, optionally with a counter discount.
+
+    `requested_delivery_date` is deliberately part of the free-text message
+    rather than a column; see Locked Business Rules #8c.
+    """
+
+    comment: str = Field(min_length=1, max_length=2000)
+    counter_discount_percent: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class PortalConfirmResponse(BaseModel):
+    """PRD B8's two outcomes, told to the customer plainly."""
+
+    quotation: PortalQuotationDetailResponse
+    re_entered_approval: bool
+    message: str

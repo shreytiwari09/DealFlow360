@@ -155,8 +155,8 @@ export default function SubscriptionDetail() {
           <div className="card">
             <h2 className="card__title">Modify subscription</h2>
             <div className="row" style={{ gap: "var(--space-4)", alignItems: "flex-end" }}>
-              <div>
-                <label className="sub-cell" style={{ display: "block", marginBottom: 4 }}>
+              <div className="field">
+                <label className="field__label">
                   Quantity
                 </label>
                 <input
@@ -167,8 +167,8 @@ export default function SubscriptionDetail() {
                   onChange={(e) => setQuantity(e.target.value)}
                 />
               </div>
-              <div>
-                <label className="sub-cell" style={{ display: "block", marginBottom: 4 }}>
+              <div className="field">
+                <label className="field__label">
                   Plan
                 </label>
                 <select

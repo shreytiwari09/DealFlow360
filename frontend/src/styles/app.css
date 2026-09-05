@@ -652,6 +652,60 @@ table.data tbody tr.clickable:hover {
   flex: 1;
 }
 
+/* --- Customer portal shell (Section 2.2) ---------------------------------
+ * Lighter and less dense than the internal shell on purpose: a customer looks
+ * at one quotation, not an ops console. No sidebar exists here at all — the
+ * portal is a separate shell, not the internal one with items hidden.
+ */
+
+.portal {
+  min-height: 100vh;
+  background: var(--color-bg);
+}
+.portal__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+.portal__brand {
+  font: var(--font-section-title);
+  font-weight: 700;
+}
+.portal__nav {
+  display: flex;
+  gap: var(--space-4);
+  flex: 1;
+}
+.portal__link {
+  font: var(--font-body);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  padding: var(--space-1) 0;
+  border-bottom: 2px solid transparent;
+}
+.portal__link--active {
+  color: var(--color-text);
+  border-bottom-color: var(--color-accent);
+}
+.portal__link--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.portal__user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.portal__main {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}
+
 /* --- Responsive (Section 8) ---------------------------------------------- */
 
 @media (max-width: 900px) {
@@ -663,6 +717,18 @@ table.data tbody tr.clickable:hover {
     display: none;
   }
   .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* FRONTEND.md Section 8: the portal is the one screen most likely to be
+     opened on a phone by a real customer, so it must stay fully usable
+     single-column — more so than any internal screen. */
+  .portal__main {
+    padding: var(--space-4) var(--space-3);
+  }
+  .portal__bar {
+    padding: var(--space-3);
+  }
+  .grid-3 {
     grid-template-columns: minmax(0, 1fr);
   }
 }

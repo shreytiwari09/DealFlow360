@@ -76,6 +76,14 @@ QUOTATION_TRANSITIONS: Mapping[QuotationStatus, frozenset[QuotationStatus]] = {
         {
             QuotationStatus.SENT,
             QuotationStatus.CONFIRMED,
+            # An internally-approved quote is exactly as negotiable as a
+            # `sent` one once the customer can see it - PRD B8 draws no
+            # distinction between "sent because no approval was needed" and
+            # "sent because it just cleared approval." A customer asking for
+            # MORE than what was approved must go through a fresh negotiation
+            # round (and, if it breaches, a fresh approval - decided
+            # approvals are terminal), mirroring `sent -> under_negotiation`.
+            QuotationStatus.UNDER_NEGOTIATION,
             QuotationStatus.CANCELLED,
         }
     ),

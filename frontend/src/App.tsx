@@ -13,6 +13,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import InternalShell from "./layouts/InternalShell";
+import PortalShell from "./layouts/PortalShell";
 import Login from "./screens/Login";
 import Dashboard from "./screens/Dashboard";
 import QuotationsList from "./screens/QuotationsList";
@@ -25,6 +26,8 @@ import SubscriptionsList from "./screens/SubscriptionsList";
 import SubscriptionDetail from "./screens/SubscriptionDetail";
 import InvoicesList from "./screens/InvoicesList";
 import InvoiceDetail from "./screens/InvoiceDetail";
+import PortalQuotationsList from "./screens/PortalQuotationsList";
+import PortalQuotationDetail from "./screens/PortalQuotationDetail";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -32,36 +35,10 @@ import "./styles/app.css";
 function LoginRoute() {
   const { user, loading } = useAuth();
   if (loading) return <div className="login">Loading…</div>;
-  if (user) return <Navigate to={user.role === "customer" ? "/portal" : "/dashboard"} replace />;
+  if (user) {
+    return <Navigate to={user.role === "customer" ? "/portal/quotations" : "/dashboard"} replace />;
+  }
   return <Login />;
-}
-
-/**
- * The customer portal shell (FRONTEND.md Section 2.2) is Phase 3 step 7 and
- * is not built. Portal users are told so rather than being dropped into the
- * internal shell, which they must never see.
- */
-function PortalPlaceholder() {
-  const { user, signOut } = useAuth();
-  return (
-    <div className="login">
-      <div className="login__card">
-        <div className="login__brand">DealFlow360</div>
-        <p className="login__tagline">Customer portal</p>
-        <p>
-          Signed in as <strong>{user?.full_name}</strong>
-          {user?.customer_name ? ` (${user.customer_name})` : ""}.
-        </p>
-        <p className="muted">
-          The negotiation screen is not built yet. It is a separate, restricted view — not
-          the internal workspace — so there is deliberately nothing here to fall back to.
-        </p>
-        <button className="btn" onClick={() => void signOut()}>
-          Sign out
-        </button>
-      </div>
-    </div>
-  );
 }
 
 export default function App() {
@@ -70,7 +47,10 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginRoute />} />
-          <Route path="/portal" element={<PortalPlaceholder />} />
+          {/* A customer landing on the bare /portal (an old bookmark, or the
+              redirect above) goes straight to their list — there is no
+              standalone /portal screen of its own. */}
+          <Route path="/portal" element={<Navigate to="/portal/quotations" replace />} />
 
           <Route element={<InternalShell />}>
             <Route path="/dashboard" element={<Dashboard />} />
@@ -84,6 +64,11 @@ export default function App() {
             <Route path="/subscriptions/:id" element={<SubscriptionDetail />} />
             <Route path="/invoices" element={<InvoicesList />} />
             <Route path="/invoices/:id" element={<InvoiceDetail />} />
+          </Route>
+
+          <Route element={<PortalShell />}>
+            <Route path="/portal/quotations" element={<PortalQuotationsList />} />
+            <Route path="/portal/quotations/:id" element={<PortalQuotationDetail />} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

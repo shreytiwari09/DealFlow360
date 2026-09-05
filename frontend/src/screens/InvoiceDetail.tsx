@@ -165,8 +165,8 @@ export default function InvoiceDetail() {
           <div className="card">
             <h2 className="card__title">Record a payment</h2>
             <div className="row" style={{ gap: "var(--space-4)", alignItems: "flex-end", flexWrap: "wrap" }}>
-              <div>
-                <label className="sub-cell" style={{ display: "block", marginBottom: 4 }}>
+              <div className="field">
+                <label className="field__label">
                   Amount
                 </label>
                 <input
@@ -178,8 +178,8 @@ export default function InvoiceDetail() {
                   onChange={(e) => setPayAmount(e.target.value)}
                 />
               </div>
-              <div>
-                <label className="sub-cell" style={{ display: "block", marginBottom: 4 }}>
+              <div className="field">
+                <label className="field__label">
                   Method
                 </label>
                 <select className="select" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
@@ -190,8 +190,8 @@ export default function InvoiceDetail() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="sub-cell" style={{ display: "block", marginBottom: 4 }}>
+              <div className="field">
+                <label className="field__label">
                   Reference (optional)
                 </label>
                 <input

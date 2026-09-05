@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     dashboard,
     fulfillment,
     health,
+    portal,
     quotations,
 )
 
@@ -22,3 +23,4 @@ api_router.include_router(quotations.router)
 api_router.include_router(approvals.router)
 api_router.include_router(fulfillment.router)
 api_router.include_router(billing.router)
+api_router.include_router(portal.router)

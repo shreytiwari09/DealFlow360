@@ -78,6 +78,10 @@ PERMISSIONS: list[tuple[str, str]] = [
     ("deal.assign", "Reassign a quotation to another rep"),
     ("deal.approve_manager", "First-level (Sales Manager) approval"),
     ("deal.approve_finance", "Second-level (Finance) approval"),
+    # Manual override for "the customer confirmed on a call" — the customer's
+    # own path is the portal's confirm action. Granted to nobody but Admin
+    # (who holds every permission), per Locked Business Rules #7 and #8.
+    ("deal.confirm_override", "Confirm a quotation on the customer's behalf"),
     ("portal.own_quote.view", "Portal: view own quotation"),
     ("portal.own_quote.negotiate", "Portal: counter-offer and comment"),
     ("fulfillment.manage", "Accept or override warehouse splits, manage backorders"),

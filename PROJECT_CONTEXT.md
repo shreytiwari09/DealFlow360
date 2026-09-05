@@ -3,20 +3,23 @@
 ## Current Objective
 Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.md Section 18), sequenced: 🔴 Core workflow fully working first, then 🟡 Supporting, then 🟢 Bonus only if ahead of schedule. Database and business-logic correctness are being treated as first-class judging criteria, not implementation afterthoughts.
 
-**Where we are right now:** Phases 1, 2 and 3 are complete, plus a Phase 8 frontend slice
-brought forward at the user's request. **There is a working, demoable application** — see
-`DEMO.md`, the verified script to run in front of an interviewer, which covers the approval
-flows and lists exactly what is and is not built (it does not yet cover fulfillment or billing —
-see its own note).
+**Where we are right now:** Phases 1, 2 and 3 are all complete, plus a Phase 8 frontend slice
+brought forward at the user's request. **All PRD Core (🔴) scope is done.** There is a working,
+demoable application — see `DEMO.md`, the verified script to run in front of an interviewer,
+which covers the approval flows and lists exactly what is and is not built (it does not yet
+cover fulfillment, billing or the portal — see its own note).
 
 Working end to end: login for all five roles, quotation builder with a live blended risk score
 and a subscription-plan picker for hybrid lines, automatic approval routing (including the
 sequential two-step Manager→Finance chain), approve / reject / return-for-revision with a
-mandatory reason, a full audit trail, multi-warehouse fulfillment with backorders, and hybrid
-billing with daily-basis mid-cycle proration. Screens 1-10, 12 and 13 of `FRONTEND.md` are built.
+mandatory reason, a full audit trail, multi-warehouse fulfillment with backorders, hybrid
+billing with daily-basis mid-cycle proration, and a genuinely separate customer portal where a
+counter-offer that breaches policy automatically re-enters approval. Screens 1-13 of
+`FRONTEND.md` are built.
 
-**Next:** the customer portal negotiation screen, then the upsell panel wired to real data. See
-"Remaining Work" for the ordered backlog.
+**Next:** everything remaining is 🟡 Supporting scope — the upsell panel wired to real data,
+then the deal health dashboard, reporting, and admin config screens. See "Remaining Work" for
+the ordered backlog.
 
 **Source-of-truth documents:** `PLAN.md` (process and order), `PROJECT_CONTEXT.md` (this file),
 `IMPLEMENTATION_LOG.md` (history), `SECURITY_SPEC.md` (security contract), `FRONTEND.md`
@@ -415,12 +418,12 @@ the sole legal predecessor of `FULFILLED` (`APPROVED → CONFIRMED → FULFILLED
 trigger would mean generating a fulfillment for a quotation with no legal route to ever
 finish one.
 
-**Consequence:** since the customer portal negotiation screen (backlog item 2, not yet
-built) is what would normally call this transition, a small internal stand-in exists —
-`POST /quotations/{id}/confirm` — moving `approved`/`sent`/`under_negotiation` →
-`confirmed`. Deliberately **not** restricted to the owning rep: "the customer confirmed on
-a call" is not something only the original rep witnessed. **This endpoint is temporary**
-and should be retired or restricted to Admin once the real portal action exists.
+**Consequence:** `POST /quotations/{id}/confirm` moves `approved`/`sent`/`under_negotiation`
+→ `confirmed`. It began life as a temporary stand-in for the customer's own action while the
+portal did not exist. **Now that the portal is built (see #8), it is restricted to the
+`deal.confirm_override` permission (Admin only)** and survives only as the manual override
+for "the customer confirmed on a call." The customer's own path is
+`POST /portal/quotations/{id}/confirm`.
 
 **Reservation happens at generation, not at "accept".** `SELECT ... FOR UPDATE` locks and
 reserves stock (`quantity_reserved += allocation`) the moment a split is *computed*, inside
@@ -436,6 +439,72 @@ describes** ("a prompt appears automatically" once stock arrives). The manual en
 (`POST .../backorders/{id}/consolidate`) is what that prompt would call; nothing currently
 watches for restocks and surfaces the prompt unprompted — that needs a background job,
 tracked in Known Issues.
+
+### 8. Customer Portal Negotiation — LOCKED (2026-09-06)
+
+PRD B8 and FRONTEND.md Screen 11 leave three things unspecified. Confirmed with the user
+before implementing, per PLAN.md §0.6:
+
+**a) A counter-offer is an order-level discount, and comments are free text.** The wireframe
+draws a per-line comment table, but the only quantitative field it gives the customer is a
+single `Counter Discount %`. So the counter is applied exactly like the internal order-level
+discount (Locked Business Rules #4 — distributed onto every line, overwriting, never scored
+separately), and the per-line comments are informational text that never moves a number by
+itself. This keeps one and only one code path capable of changing a line's discount.
+
+**b) Negotiation history lives in `audit_logs`, not a new table.** Each `Submit Request`
+writes one `AuditLog` row (`action=PORTAL_COUNTER_OFFER`, `reason` carrying the customer's
+message and the counter percentage). Screen 11's comment table is rendered from those rows.
+Rationale: the constant already existed for exactly this event, the audit trail is already
+how every other reason-carrying action in this system is recorded (and how Screen 6 already
+renders its history), and a customer-visible message *is* an audit-relevant event — putting
+it anywhere else would mean the negotiation record could be edited without leaving a trace.
+
+**c) `Requested Delivery Date` is informational, captured in the comment text.** It gets no
+column. The PRD never states that anything downstream reacts to it (fulfillment's
+`promised_date` is ops-set, a different thing), so a structured column would imply a
+guarantee the system does not make.
+
+**Confirm routing (PRD B8, verbatim):** on `Confirm Quotation`, the current terms are
+re-scored. If approval is required, the quotation re-enters the approval flow
+(`under_negotiation → pending_approval`) with a **new** approval request — decided approvals
+are terminal, which is exactly why this must be a new request, not a reopened one — and the
+audit reason records that the origin was a customer counter-offer, so Screen 6 can show it
+differently from a first-time submission. If no approval is required, it goes straight to
+`confirmed`, which generates billing and unlocks fulfillment (#7).
+
+**d) "Exceeds approval thresholds" means "not already approved at these terms", not merely
+"breaches policy".** Read literally, re-scoring on confirm is a trap: a quotation approved at
+18% and then sent still scores as breaching, because nothing about it changed — so it would
+bounce straight back to the manager who just approved it, and *no quotation that ever needed
+an approval could ever be confirmed*. The rule implemented instead: an approval is required
+unless an `ApprovalRequest` that reached `APPROVED` for this quotation snapshots **both** the
+same `blended_risk_score` and the same `max_line_excess` as the terms now on the table. Any
+counter-offer that changes a discount changes at least one of those, so it correctly
+re-enters approval. Deliberately strict in one direction: a counter that is still over the
+ceiling but *less* over than what was approved (18% → 16% against a 10% ceiling) does not
+match and does go back for approval — different terms that still breach policy, and "the
+customer talked us down a bit" is not a reason to skip the control. Implemented as
+`terms_already_approved()` in `app/services/portal.py`.
+
+**e) `approved` is negotiable, found live — not initially designed for.** The first cut of
+`NEGOTIABLE_STATUSES` was `{sent, under_negotiation}`, following PRD B8's own wording literally.
+The live-API script immediately showed the actual bug this caused: PRD B3's own flow has no
+"send to customer" step after an approval clears — a quotation that needed approval before it
+ever reached the customer sits at `approved`, not `sent`, and with `approved` excluded a
+rep-approved quote could never reach the customer at all, and re-entering approval via a
+counter-offer would land back on `approved` with no way forward from there either. Fixed by
+adding `approved` to `NEGOTIABLE_STATUSES`, and — since the state machine had no
+`approved → under_negotiation` edge — adding that edge to `QUOTATION_TRANSITIONS` (a customer
+asking for MORE than what was approved is a fresh negotiation round, exactly like
+`sent → under_negotiation`). The portal maps `approved` down to the customer-facing label
+`Sent`, consistent with #8b/c's rule that internal state names are never shown verbatim.
+
+**The internal `POST /quotations/{id}/confirm` stand-in is now restricted**, as #7 said it
+should be once this screen existed. It requires the new `deal.confirm_override` permission,
+which only Admin holds. It is gated by *permission*, not by a role check, so it stays
+consistent with SECURITY_SPEC.md Section 4's rule — Admin holds it only because Admin is
+seeded with every permission.
 
 ## Core Workflows
 1. Rep builds quotation → adds lines → applies discounts (line-level, or order-level distributed onto every line — see Locked Business Rules #4)
@@ -593,6 +662,23 @@ locked formula (the exact answer is 800.00 / 1200.00 / 400.00) — corrected in 
 section for the full explanation and `IMPLEMENTATION_LOG.md` 2026-09-06 "Hybrid Billing and
 Proration."
 
+**Resolved 2026-09-06 — customer portal negotiation is built, closing out Phase 3 (Core)
+entirely.** PRD B8's real "Confirm Quotation" now lives at `POST
+/portal/quotations/{id}/confirm`; the internal stand-in from Locked Business Rules #7 is
+restricted to `deal.confirm_override` (Admin only) as promised there. See Locked Business
+Rules #8 for the four business-logic decisions this required and the one real gap
+(`approved` being negotiable at all) found via the live-API script rather than designed for
+up front.
+
+**Known, deliberately unfixed this round — a display-precision cosmetic, same class as the
+one fixed in `services/billing.py`.** A `Decimal` value set directly from a JSON request body
+(e.g. `20`) prints without the trailing zeros a DB-round-tripped value of the same column
+shows (`20.00`) until the row is next read back from Postgres. Fixed for the portal's counter
+discount (`services/portal.py`'s `_percent()`) because this session touched that exact code
+path; the same class of gap likely still exists on the internal order-level discount endpoint
+(`apply_order_discount` in `quotations.py`) and possibly elsewhere. Purely cosmetic — the
+stored value is always correct — but worth a dedicated sweep rather than a rule-by-rule fix.
+
 **Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.
   Specifically: how many days of inactivity makes a quote "stalled", and how far above a
@@ -660,48 +746,52 @@ Proration."
   and `Scheduled → Invoiced → Paid` invoicing with payment recording.
 - Audit trail on every create, edit, submission, approval, rejection, fulfillment action,
   billing action and denial
+- **Customer portal negotiation** — a genuinely separate `/portal/*` API surface
+  (`app/services/portal.py`, `app/api/v1/endpoints/portal.py`) gated by `portal.*` permissions
+  no internal role holds, scoped by `customer_id` from the token, and returning schemas with no
+  internal field to leak. Covers PRD B8's full surface: comment/counter-offer (an order-level
+  discount, reusing the same discount and risk-scoring code an internal edit would), and Confirm
+  with the automatic re-approval loop — including `terms_already_approved()`, the rule that
+  keeps an already-approved quotation from bouncing back to the same approver forever. See
+  Locked Business Rules #8.
 
-**Phase 8 (Frontend): Screens 1-10, 12 and 13 built.** Screens 1-6 brought forward at the user's
-request once `FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment) and 9-10, 12-13
-(Subscriptions/Invoices) followed immediately once their respective backends existed. Screen 11
-(customer portal negotiation) and 14-18 appear in the sidebar explicitly disabled, or don't exist
-yet for the portal shell, rather than as links to empty pages.
+**Phase 8 (Frontend): Screens 1-13 built.** Screens 1-6 brought forward at the user's request
+once `FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment), 9-10/12-13
+(Subscriptions/Invoices) and 11 (the customer portal, its own separate shell) each followed
+immediately once their respective backends existed. Screens 14-18 appear in the internal
+sidebar explicitly disabled rather than as links to empty pages.
 
-**Verified 2026-09-06:** 170 unit/integration tests (145 + 25 new billing tests) plus 56 + 51 +
-40 end-to-end API checks all pass. Fulfillment's flows (Confirm → auto-generated split → Accept,
-Manual Override, Consolidate-after-restock) were driven through the real UI headlessly; the
-billing screens compile and type-check against the real API (`tsc -b && vite build` clean) and
-were verified via the live-API script, but have not yet had a full browser click-through — see
-`IMPLEMENTATION_LOG.md`'s Known Issues for that entry. `DEMO.md` records the expected numbers for
-the approval flows it covers; the fulfillment and billing flows' numbers are recorded in Locked
-Business Rules #7/#3 and IMPLEMENTATION_LOG.md instead, pending a DEMO.md update.
+**Verified 2026-09-06:** 185 unit/integration tests (170 + 15 new portal tests) plus 56 + 51 +
+40 + 29 end-to-end API checks all pass. Fulfillment's flows (Confirm → auto-generated split →
+Accept, Manual Override, Consolidate-after-restock) were driven through the real UI headlessly;
+the billing and portal screens compile and type-check against the real API (`tsc -b && vite
+build` clean) and were verified via live-API scripts, but have not yet had a full browser
+click-through — see `IMPLEMENTATION_LOG.md`'s Known Issues for that entry. `DEMO.md` records the
+expected numbers for the approval flows it covers; the fulfillment, billing and portal flows'
+numbers are recorded in Locked Business Rules #3/#7/#8 and IMPLEMENTATION_LOG.md instead,
+pending a DEMO.md update.
 
 ## Remaining Work
 
 Ordered backlog. Everything below already has schema support — the data model was built for the
 full PRD in Phase 2, so none of it needs a migration for its core tables.
 
+All of Phase 3 (Core) is done, including customer portal negotiation. Everything below is
+🟡 Supporting scope — none of it blocks a demo of the Core flow.
+
 ### Next up
 
-1. **Customer portal negotiation** (PRD B8, Screen 11)
-   - Needs its own endpoints under `portal.*` permissions — NOT a filtered view of the internal
-     list. The portal shell exists and correctly refuses internal screens; only the negotiation
-     screen itself is a placeholder
-   - A counter-offer breaching a threshold must raise a NEW approval request, which is precisely
-     why decided approvals are terminal in the state machine
-   - `under_negotiation` and its transitions are already implemented and tested
-
-2. **Upsell panel wired to `upsell_rules`** (PRD B5)
+1. **Upsell panel wired to `upsell_rules`** (PRD B5)
    - 7 rules are seeded. The builder currently shows promoted products as a stand-in; it needs
      the real co-purchase lookup, the margin-delta figure and the `Dismiss` action
 
 ### Then Phase 5 (Supporting)
 
-3. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
-4. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
-5. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
+2. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
+3. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
+4. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
    configurable at runtime, only the UI is missing
-6. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
+5. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
 
 ### Deferred deliberately
 

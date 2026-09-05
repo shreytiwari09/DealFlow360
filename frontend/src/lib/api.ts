@@ -422,3 +422,50 @@ export interface InvoiceDetail extends BillingScheduleRow {
   payments: Payment[];
   can_act: boolean;
 }
+
+// --- Customer portal (PRD B8, FRONTEND.md Screen 11) ----------------------
+//
+// Deliberately thin. These mirror the backend's portal-only schemas, which
+// carry no discount ceiling, no risk score, no margin and no owner — there is
+// nothing internal here to accidentally render.
+
+export interface PortalLine {
+  line_number: number;
+  product_name: string;
+  quantity: string;
+  unit_list_price: string;
+  discount_percent: string;
+  line_total: string;
+}
+
+export interface PortalComment {
+  created_at: string;
+  author_name: string | null;
+  message: string;
+}
+
+export interface PortalQuotationSummary {
+  id: number;
+  quote_number: string;
+  status: string;
+  total_amount: string;
+  currency: string;
+  updated_at: string;
+  valid_until: string | null;
+}
+
+export interface PortalQuotationDetail extends PortalQuotationSummary {
+  customer_name: string;
+  subtotal_amount: string;
+  discount_amount: string;
+  tax_amount: string;
+  lines: PortalLine[];
+  comments: PortalComment[];
+  can_negotiate: boolean;
+}
+
+export interface PortalConfirmResult {
+  quotation: PortalQuotationDetail;
+  re_entered_approval: boolean;
+  message: string;
+}

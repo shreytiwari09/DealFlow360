@@ -37,8 +37,7 @@ from app.schemas.api import (
 )
 from app.services import audit
 from app.services.approval import raise_approval_request, risk_band
-from app.services.billing import generate_billing_for_quotation
-from app.services.quotation import load_quotation, next_quote_number, recalculate
+from app.services.quotation import confirm, load_quotation, next_quote_number, recalculate
 from app.services.state_machine import InvalidStateTransition, assert_transition
 
 router = APIRouter(prefix="/quotations", tags=["quotations"])
@@ -50,6 +49,8 @@ _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quotat
 # here makes the permission each route demands readable at a glance.
 CanReadOwn = Annotated[User, Depends(require_permission("deal.read_own"))]
 CanCreate = Annotated[User, Depends(require_permission("deal.create"))]
+# Admin-only in practice: nobody else is seeded with it (Locked Business #8).
+CanConfirmOverride = Annotated[User, Depends(require_permission("deal.confirm_override"))]
 
 
 def _line_response(line: QuotationLine) -> QuotationLineResponse:
@@ -429,36 +430,34 @@ async def peek_next_number(session: SessionDep, user: CurrentUser) -> dict[str, 
 
 @router.post("/{quotation_id}/confirm", response_model=QuotationResponse)
 async def confirm_quotation(
-    request: Request, quotation_id: int, session: SessionDep, user: CurrentUser
+    request: Request, quotation_id: int, session: SessionDep, user: CanConfirmOverride
 ) -> QuotationResponse:
-    """Move a quotation to `confirmed`, unlocking fulfillment.
+    """Confirm a quotation on the customer's behalf — an Admin override.
 
-    This is a deliberate, temporary stand-in. PRD B8 gives the CUSTOMER the
-    "Confirm Quotation" action on the portal negotiation screen, which is not
-    built yet (PROJECT_CONTEXT.md backlog item 3). Until it exists, an
-    internal user records that the customer has confirmed by some other
-    channel (a call, an email) and this endpoint performs the same state
-    transition the portal button will eventually call. It is intentionally
-    NOT restricted to the owning rep only - any internal user who can view
-    the quotation may record a confirmation, since "the customer said yes on
-    a call" is not something only the original rep witnesses.
+    The customer's own "Confirm Quotation" (PRD B8) now lives on the portal at
+    `POST /portal/quotations/{id}/confirm`, and that is the normal path. This
+    endpoint began as a stand-in while the portal did not exist; it survives
+    only for the case the PRD does not cover — the customer confirmed by phone
+    or email — and is now restricted to `deal.confirm_override`, which only
+    Admin holds (Locked Business Rules #7 and #8).
 
-    Superseded once the portal screen exists: at that point the customer's
-    own action becomes the only path to `confirmed` for non-customer-facing
-    exceptions, and this endpoint can be retired or restricted to Admin.
+    It is deliberately NOT restricted to the owning rep: "the customer said
+    yes on a call" is not something only the original rep can witness. But it
+    IS restricted to one permission, because an unrestricted second route to
+    `confirmed` would let any internal user bypass the customer's own
+    confirmation entirely.
     """
     quotation = await load_quotation(session, quotation_id)
     if quotation is None:
         raise _NOT_FOUND
     await assert_can_view_quotation(request, session, user, quotation)
 
+    # One shared implementation with the portal's confirm — transition,
+    # then billing — so the two paths cannot drift.
     try:
-        assert_transition("Quotation", QuotationStatus(quotation.status), QuotationStatus.CONFIRMED)
+        schedules = await confirm(session, quotation, actor_id=user.id)
     except InvalidStateTransition as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-    quotation.status = QuotationStatus.CONFIRMED
-    quotation.last_activity_at = datetime.now(UTC)
 
     await audit.record(
         session,
@@ -466,15 +465,9 @@ async def confirm_quotation(
         user_id=user.id,
         resource="quotation",
         resource_id=quotation.id,
-        reason="confirmed (internal stand-in for customer portal confirmation)",
+        reason="confirmed by an administrator on the customer's behalf",
         request=request,
     )
-
-    # Billing is locked in at the same trigger point as fulfillment (Locked
-    # Business Rules #7): CONFIRMED is where every other part of this system
-    # treats the order as real. Generates the one-time invoice line and one
-    # Subscription + first-cycle schedule per subscription line.
-    schedules = await generate_billing_for_quotation(session, quotation, actor_id=user.id)
     if schedules:
         await audit.record(
             session,

@@ -8,18 +8,22 @@ writer, called on every mutation.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.billing import BillingSchedule
 from app.models.catalog import Product
 from app.models.customer import Customer
-from app.models.enums import CustomerTier
+from app.models.enums import CustomerTier, QuotationStatus
 from app.models.policy import DiscountTier
 from app.models.quotation import Quotation, QuotationLine
+from app.services.billing import generate_billing_for_quotation
 from app.services.risk import LineRiskInput, RiskAssessment, assess_lines
+from app.services.state_machine import assert_transition
 
 _MONEY = Decimal("0.01")
 
@@ -142,6 +146,26 @@ async def load_quotation(session: AsyncSession, quotation_id: int) -> Quotation 
         )
     )
     return result.scalar_one_or_none()
+
+
+async def confirm(
+    session: AsyncSession, quotation: Quotation, *, actor_id: int
+) -> list[BillingSchedule]:
+    """Move a quotation to `confirmed` and lock in its billing.
+
+    The single implementation of "this order is now real", shared by the
+    customer's own portal confirmation (PRD B8, the real path) and the Admin
+    `deal.confirm_override` stand-in for a confirmation received by phone.
+    Two copies of this would eventually disagree about whether billing was
+    generated, which is the kind of divergence nobody notices until an invoice
+    is missing.
+
+    Raises `InvalidStateTransition` if the quotation cannot legally confirm.
+    """
+    assert_transition("Quotation", QuotationStatus(quotation.status), QuotationStatus.CONFIRMED)
+    quotation.status = QuotationStatus.CONFIRMED
+    quotation.last_activity_at = datetime.now(UTC)
+    return await generate_billing_for_quotation(session, quotation, actor_id=actor_id)
 
 
 async def next_quote_number(session: AsyncSession) -> str:

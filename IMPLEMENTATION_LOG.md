@@ -816,3 +816,155 @@ PROJECT_CONTEXT.md's backlog, next two items: (1) Customer portal negotiation (P
 11) — the portal shell exists and correctly refuses internal screens, but the negotiation screen
 itself is still a placeholder; (2) Upsell panel wired to real `upsell_rules` data (PRD B5) — 7
 rules are seeded but the builder currently just shows promoted products as a stand-in.
+
+---
+
+## 2026-09-06 — Customer Portal Negotiation (PRD B8, Screen 11) — Phase 3 complete
+
+### Goal
+Implement the last item in Phase 3's core backlog: the customer-facing negotiation screen, per
+PRD B8 and FRONTEND.md Screen 11. Before writing code, three genuine ambiguities were confirmed
+with the user (PLAN.md §0.6 — see Locked Business Rules #8 for the full reasoning):
+(a) a counter-offer is an order-level discount, comments are free text; (b) negotiation history
+is stored in `audit_logs` (reusing the existing `PORTAL_COUNTER_OFFER` action), not a new table;
+(c) "Requested Delivery Date" is informational, folded into the comment text, no new column.
+Also confirmed: the temporary internal `POST /quotations/{id}/confirm` stand-in (Locked Business
+Rules #7) should now be restricted to Admin, as its own docstring always said it should be once
+this screen existed.
+
+### Implemented
+
+**1. `app/services/portal.py`** — the customer's two actions, deliberately built on the SAME
+code paths an internal user's equivalent action uses, not a parallel set of rules:
+- `submit_counter_offer()` — "Submit Request." A counter discount is written onto every line
+  exactly like the internal order-level discount (Locked Business Rules #4), then re-scored by
+  the same `recalculate()`. A comment-only request (no counter) still moves `sent -> under_
+  negotiation` but changes no numbers.
+- `confirm_from_portal()` — "Confirm Quotation," including PRD B8's automatic re-approval loop:
+  re-scores the current terms, and either raises a NEW approval request (decided approvals are
+  terminal) or calls the same `quotation.confirm()` the Admin override uses, so billing
+  generation can never drift between the two paths.
+- `terms_already_approved()` — the one genuinely subtle rule (Locked Business Rules #8d): a
+  quotation approved at 18% and then sent still SCORES as breaching when re-scored on confirm,
+  because nothing about it changed. Routing on the score alone would bounce it back to the same
+  manager forever, and no quotation that ever needed an approval could ever be confirmed. Instead,
+  an approval is required unless a PREVIOUS `ApprovalRequest` that reached `APPROVED` for this
+  quotation matches **both** the current `blended_risk_score` and `max_line_excess` exactly — a
+  counter that changes either number correctly re-enters approval; identical terms do not.
+
+**2. `app/services/quotation.py`** gained `confirm()`, the single shared implementation of
+"transition to CONFIRMED and generate billing," used by both the portal and the now-restricted
+internal override — two copies of this would eventually disagree about whether billing was
+generated.
+
+**3. Endpoints** (`app/api/v1/endpoints/portal.py`, prefix `/portal`): a genuinely separate
+surface per PLAN.md and the PRD's own technical guidelines — every route requires a `portal.*`
+permission no internal role holds, every query is scoped by `customer_id` from the token (never
+the request), and every response uses portal-only schemas with no internal field to leak
+(`allowed_discount_percent`, `margin_*`, `blended_risk_score`, `owner_name` etc. simply do not
+exist on `PortalQuotationDetailResponse`). Internal statuses are mapped down to the three PRD
+names ("Sent, Under Negotiation, Confirmed") rather than shown verbatim.
+
+**4. Internal confirm endpoint restricted.** `POST /quotations/{id}/confirm` now requires a new
+`deal.confirm_override` permission, seeded to Admin only — gated by *permission*, not a role
+check, per SECURITY_SPEC.md Section 4 (Admin holds it only because Admin is seeded with every
+permission).
+
+**5. Frontend:** `PortalShell.tsx` (a completely separate shell — no sidebar, no internal nav,
+matching the wireframe's own separate top bar), `PortalQuotationsList.tsx` ("My Quotations," the
+minimum viable list FRONTEND.md Section 2.2 calls for), `PortalQuotationDetail.tsx` (Screen 11 —
+lines, comment thread, Counter Discount % + Requested Delivery Date fields, Submit Request /
+Confirm Quotation). The old `PortalPlaceholder` in `App.tsx` is gone.
+
+### Files Changed
+- `backend/app/services/portal.py` (new)
+- `backend/app/api/v1/endpoints/portal.py` (new)
+- `backend/app/services/quotation.py` (`confirm()`)
+- `backend/app/api/v1/endpoints/quotations.py` (confirm endpoint restricted + reuses `confirm()`)
+- `backend/app/services/state_machine.py` (`approved -> under_negotiation` edge — see below)
+- `backend/app/schemas/api.py` (portal DTOs)
+- `backend/app/seed.py` (`deal.confirm_override` permission, Admin only)
+- `backend/tests/test_portal.py` (new — 15 tests)
+- `frontend/src/layouts/PortalShell.tsx` (new)
+- `frontend/src/screens/PortalQuotationsList.tsx`, `PortalQuotationDetail.tsx` (new)
+- `frontend/src/App.tsx` (portal routes; removed `PortalPlaceholder`)
+- `frontend/src/lib/api.ts`, `frontend/src/styles/app.css` (portal types and shell styles)
+- `PROJECT_CONTEXT.md`, `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+See Locked Business Rules #8 (a-e) in full. The one decision made mid-implementation rather
+than up front:
+
+- Decision: `approved` is a negotiable status, with a new `approved -> under_negotiation`
+  state-machine edge.
+- Reason: found live, not designed for. PRD B3's own flow has no "send to customer" step after
+  an internal approval clears — a quotation that needed approval before it ever reached the
+  customer sits at `approved`, not `sent`. The first cut of `NEGOTIABLE_STATUSES` followed PRD
+  B8's wording literally (`sent`, `under_negotiation` only) and the live-API script immediately
+  showed the consequence: a rep-approved quote could never reach the customer at all, and a
+  quote that re-entered approval via a counter-offer would land back on `approved` with no path
+  forward. See Known Issues below for how this was caught.
+
+### Validation
+- Tests: **185 backend tests pass** (170 prior + 15 new). Coverage: counter-offer moves
+  `sent -> under_negotiation`; a counter discount lands on every line and is re-scored; a
+  comment-only request changes no numbers; a second counter round does not re-assert an
+  already-satisfied transition; negotiating a draft is rejected; a compliant confirm goes
+  straight to `confirmed`; a breaching confirm re-enters approval with a NEW request (not a
+  reopened one); `terms_already_approved` both fires correctly (identical terms skip
+  re-approval) and correctly does NOT fire on a changed-but-still-breaching counter or a
+  REJECTED (not APPROVED) prior request; confirming generates billing via the same
+  `quotation.confirm()` the Admin path uses; double-confirm rejected; and the `approved`-status
+  regression itself, both confirming and re-negotiating from `approved` directly.
+- `ruff check .` / `ruff format --check .` clean. Frontend `tsc -b && vite build` clean.
+- Manual verification against real seeded PostgreSQL via a 29-check hand-written script driving
+  the actual HTTP API end to end, including the full realistic loop: rep builds a compliant
+  Services-line order → submits (skips approval) → customer comments (no number changes) →
+  customer counters to a breaching 20% → customer confirms → **re-enters approval automatically**
+  → verified INTERNALLY that the status really is `pending_approval` and a new `ApprovalRequest`
+  exists, with the audit trail showing the customer-counter-offer origin → manager approves →
+  customer confirms AGAIN on now-approved terms → `terms_already_approved` correctly lets it
+  through straight to `confirmed` with no second approval cycle → billing generated. Also
+  verified: an internal user gets 403 from every `/portal/*` route; a customer cannot see a
+  draft quotation (404, not 403 — existence itself is not revealed); portal responses contain
+  no internal field; a rep gets 403 from the internal confirm override, Admin does not.
+
+**Two real issues found via the live-API script, neither caught by the unit tests written
+first (both are now covered by added tests/fixes):**
+1. **The `approved` status gap** described above under Important Decisions — a real, would-have-
+   shipped design gap, not a code bug. The unit tests exercised exactly the statuses
+   `NEGOTIABLE_STATUSES` already listed, so they could not have caught an omission from that
+   same list; only driving the real approval-then-reconfirm loop end to end surfaced it.
+2. **Display-precision cosmetic**: a counter discount of `20` (parsed by Pydantic from bare JSON,
+   not DB-round-tripped) printed as `"20"` instead of `"20.00"` until the row was next read from
+   Postgres — the same class of issue fixed for subscription quantity in the previous session's
+   billing work, now fixed here via `services/portal.py`'s `_percent()`. Noted in
+   PROJECT_CONTEXT.md Known Issues as likely present elsewhere (the internal order-level discount
+   endpoint uses the identical pattern) but not swept project-wide this round.
+
+### Known Issues
+- The `apply_order_discount` endpoint likely has the same display-precision cosmetic as the one
+  fixed here — not swept this round; tracked in PROJECT_CONTEXT.md Known Issues.
+- No full browser click-through of the new portal screens yet — `tsc -b && vite build` confirms
+  they compile and type-check against the real API responses, but nobody has clicked through
+  them in an actual browser. Same gap noted for the billing screens in the previous entry.
+- `Messages` and `Profile` in the portal top nav are rendered disabled, matching FRONTEND.md
+  Section 2.2's instruction not to invent screens the wireframe never specified content for.
+- `DEMO.md` still does not cover fulfillment, billing, or now portal negotiation — three real
+  flows undocumented there. Worth a dedicated pass before the next live demo.
+
+### Current State
+**Phase 3 (Core Business Workflow) is now fully complete** — every 🔴 Core item in PLAN.md's
+own classification is implemented, tested, and verified against the real running system. A rep
+can build a hybrid quotation, get it auto-routed for approval, fulfilled across warehouses, and
+billed with correct proration; a customer can view their own quotation, negotiate a discount,
+and confirm it — with a breaching counter-offer automatically and correctly routing back through
+the exact same approval machinery a first-time submission uses, including not looping forever on
+terms that are already approved.
+
+### Next Recommended Step
+Everything remaining is 🟡 Supporting scope (PROJECT_CONTEXT.md's "Remaining Work"): (1) Upsell
+panel wired to real `upsell_rules` data (PRD B5) — 7 rules seeded, builder currently shows
+promoted products as a stand-in; (2) Deal health dashboard — blocked on anomaly thresholds still
+being undefined; (3) Reporting with filters + export; (4) Admin config screens for discount
+tiers/approval chains — data is already configurable via the API, only the UI is missing.

@@ -222,3 +222,84 @@ Phase 2 exit condition ("the full data model supports every Core and Supporting 
 
 1. **Seed data** — roles and permissions, one user per role, discount tiers (Bronze 5 / Silver 10 / Gold 15, with a stricter Services ceiling so the PRD's own worked example reproduces), the three `approval_chains` rows, two warehouses with deliberately partial stock, and a product mix spanning Hardware / Services / Subscriptions.
 2. **The blended risk engine** — the formula and the single-line gate are locked in PROJECT_CONTEXT.md; implement with `Decimal` and unit-test against both worked examples from PRD Section 10 before wiring it into routing.
+
+---
+
+## 2026-09-05 — Phase 3 (part 1): Risk Engine, Routing and Seed Data
+
+### Goal
+Begin PLAN.md Phase 3. Run the Section 0.5 checkpoint, then build the two things every later step depends on: demo seed data, and the blended discount risk engine with its approval router — unit-tested against the PRD's own worked examples *before* being wired into any workflow.
+
+### Implemented
+
+**Section 0.5 checkpoint — three dependencies adopted after review.** Unlike Phases 1 and 2, this phase surfaced real gaps the stack cannot fill:
+- **argon2-cffi** — SECURITY_SPEC §3 requires Argon2id or bcrypt; stdlib has neither. Argon2id encodes its work-factor parameters inside the hash string, so cost can be raised later with rehash-on-login rather than a migration. Rejected: bcrypt directly (silently truncates passwords at 72 bytes), passlib (unmaintained since 2020, breaks against bcrypt 4.x).
+- **PyJWT** — `algorithms=[...]` is a *required* argument to `decode()`, so the allowlist SECURITY_SPEC §9 demands cannot be forgotten and `alg:none` is structurally impossible. Rejected: python-jose (slower releases, algorithm-confusion CVE history — the exact attack the spec lists second).
+- **slowapi** — for login rate limiting. Chosen over a hand-rolled limiter on the user's reasoning: a dict-pruned-on-read window has a genuine read-then-write race under async, and nobody writes tests for a rate limiter at 2am. Defaults to an in-memory backend, so "no Redis" is the default path rather than a workaround, and the backend swaps later without touching call sites. Rate limiting will go in inline with login, not deferred to Phase 6.
+
+**Risk engine** (`app/services/risk.py`) — pure, `Decimal` throughout, no DB or ORM:
+- `assess_lines()` — the locked value-weighted formula, returning the score, the max line excess, order value, and a per-line breakdown so an approver can see *why* a quote scored what it did.
+- `plan_approval_steps()` — reads bands from `approval_chains` and applies the single-line gate *on top* of whatever the bands return, so retuning the bands cannot silently disable the gate. Marks a gate-forced step so a low score with Finance attached does not look like a bug.
+- `distribute_order_discount()` — the overwrite-not-stack rule from Locked Business Rules #4.
+
+**Argon2id hashing** (`app/core/security.py`), including `needs_rehash` for the login-time upgrade path. `verify_password` returns False rather than raising on a malformed stored hash, so a corrupt row reads as "wrong password" instead of a 500 that confirms the account exists.
+
+**Seed data** (`app/seed.py`) — idempotent by natural key: 5 roles, 16 permissions, 36 grants, 5 users (one per role), 3 customers, 3 categories, 7 products, 2 variants, 2 price lists with a volume break, the full 9-cell ceiling matrix, 3 approval-chain rows, 2 warehouses, 6 stock rows, 3 subscription plans, 7 upsell rules.
+
+### Files Changed
+- `backend/requirements.txt` (argon2-cffi, PyJWT, slowapi)
+- `backend/app/core/security.py`
+- `backend/app/services/risk.py`
+- `backend/app/seed.py`
+- `backend/tests/test_risk_engine.py`, `backend/tests/test_seed_data.py`
+- `backend/tests/test_db_constraints.py` (role fixture now get-or-create)
+- `README.md` (converted from UTF-16 to UTF-8; brought current)
+- `PROJECT_CONTEXT.md`
+
+### Important Decisions
+
+- Decision: `requires_approval` derives from the unrounded per-line excess, not from `blended_score > 0`; and any non-zero raw score is floored at 0.01.
+- Reason: a single line one point over its ceiling inside a very large order produces a raw score around 0.0005, which quantizes to 0.00 — a stored score claiming "no breach" for a quotation that has one, falling outside the `[0.01, 25)` Manager band and escaping approval entirely. A real breach must never round away to nothing.
+
+- Decision: the single-line gate is applied on top of the band result, and the escalation step is taken from the configured chain rather than invented.
+- Reason: it keeps the gate independent of whatever the band values happen to be, so an Admin retuning `approval_chains` cannot accidentally disable it, and the escalation role always matches what was configured.
+
+- Decision: empty and zero-value quotations short-circuit to a zero score.
+- Reason: the builder scores a half-built quotation live, and a `ZeroDivisionError` on the first line added would break the primary screen.
+
+- Decision: seed stock is 6 in Main and 3 in East against a 10-unit demo order.
+- Reason: one order then exercises both the warehouse split *and* a backorder, instead of needing two contrived scenarios. A test asserts these numbers so a later "helpful" top-up fails loudly.
+
+### Validation
+- Tests: **124 passed** (up from 69). 35 new risk-engine tests and 20 new seed tests.
+  - Both PRD §10 worked examples reproduce exactly: the Laptop/Setup-Service case scores 1.33 → Manager, and the many-small-violations case scores 2.33 → Manager.
+  - Every band boundary tested at its exact edge, independently of the demo scenarios — including score exactly 25.00, which must escalate (`>=`, not `>`); a `>` there would be invisible on every demo path.
+  - The gate tested independently: not tripped at exactly 15 points over, tripped at 15.01, and forcing Finance on a 0.10 score where a severe small line is dwarfed by a large compliant one.
+  - Rounding: half-up not banker's; a real breach floored to 0.01 rather than rounding away.
+  - Seed tests drive the *real* engine from *real* seeded rows, so a typo in the matrix fails in CI rather than during the demo.
+  - RBAC boundary tests: the customer role holds exactly two portal permissions and nothing else; only Finance holds `deal.approve_finance`; the rep holds no approval permission at all.
+- Build: image rebuilds; argon2-cffi 25.1.0, PyJWT 2.13.0, slowapi present.
+- Lint: `ruff check .` clean, `ruff format --check .` clean across 44 files.
+- Manual verification: seed run three times consecutively with no duplicate rows; seeded ceiling matrix and approval chains inspected directly in psql and match the locked rules exactly.
+
+**Three defects found and fixed:**
+1. **Seed crashed with `MissingGreenlet`.** Assigning to `role.permissions` makes SQLAlchemy load the existing collection to diff against, and on a freshly inserted row that collection has never been fetched — under asyncio the implicit load raises instead of quietly issuing IO. Fixed with an explicit `session.refresh(role, ["permissions"])`.
+2. **Seeding broke 14 constraint tests.** Their `role` fixture created a `sales_rep` row that now collides with the seeded one; `roles.code` is UNIQUE over a fixed enum, so unlike the other fixtures it cannot sidestep the collision with a generated code. Changed to get-or-create.
+3. **README.md was UTF-16LE**, inherited from the original stub and preserved through later edits — every second byte NUL, so `grep` could not read it. Converted to UTF-8.
+
+### Known Issues
+- **FINDING: the `>= 25` approval band is unreachable.** The blended score is a value-weighted *mean* of the per-line excesses, so `score <= max_line_excess` always. Therefore `score >= 25` implies some line is at least 25 points over, which already tripped the `> 15` gate. Routing is correct and both demo paths work, but the band never independently decides anything. Options recorded in PROJECT_CONTEXT: lower the band below 15 so it can fire on a broad pattern of moderate breaches, or accept the gate as the sole Finance trigger. Encoded as a test that fails if the band is ever retuned below 15.
+- `tests/test_seed_data.py` requires the seed to have been run; it fails with a pointed message rather than skipping.
+- Demo passwords are shared across the five seeded accounts. Dev-only fixtures, overridable via `SEED_DEFAULT_PASSWORD`.
+
+### Current State
+The risk engine — the product's signature feature and the calculation the build is judged on — is implemented, exhaustively tested, and proven against the actual seed data. Demo data exists and is idempotent. Password hashing is ready.
+
+No HTTP surface yet: no login, no quotation endpoints, no approval workflow. The engine is not yet wired to anything.
+
+### Next Recommended Step
+Continue Phase 3 in PLAN.md §8 order:
+1. **Login** — JWT issue/verify with the algorithm allowlist, `slowapi` rate limiting on the endpoint, generic auth failures, `LOGIN_SUCCESS`/`LOGIN_FAILED` audit rows. Include the one-line comment at the signup endpoint explaining why it must never accept `customer_id`.
+2. **Permission dependencies** in `app/api/deps.py` — `require_permission(...)` plus resource-ownership checks, so authorization lives in exactly one place.
+3. **Quotation builder endpoints** — CRUD with live totals, margin and risk score computed through `assess_lines()`.
+4. **Approval routing endpoints** — persisting `ApprovalRequest` and its steps from `plan_approval_steps()`.

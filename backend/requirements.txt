@@ -1,0 +1,18 @@
+# DealFlow360 backend - runtime dependencies
+# Pinned to compatible-release ranges: safe within a major, avoids surprise breaks.
+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+
+# ORM + async Postgres driver (see PROJECT_CONTEXT.md: async SQLAlchemy decision)
+SQLAlchemy[asyncio]>=2.0.36,<2.1
+asyncpg>=0.30,<0.31
+greenlet>=3.1,<4.0
+
+# Versioned migrations - mandated by PLAN.md Section 6 (no create_all)
+alembic>=1.14,<2.0
+
+# Validation + settings
+pydantic>=2.10,<3.0
+pydantic-settings>=2.7,<3.0
+email-validator>=2.2,<3.0

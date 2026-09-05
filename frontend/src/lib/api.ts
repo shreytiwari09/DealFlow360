@@ -13,14 +13,22 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000
 const V1 = `${API_BASE_URL}/api/v1`;
 
 /*
- * Tokens live in memory, with the refresh token mirrored to localStorage so a
- * page reload does not log the user out.
+ * Tokens live in memory, with the refresh token mirrored to sessionStorage so
+ * a page reload does not log the user out.
  *
- * SECURITY_SPEC.md Section 7 prefers HttpOnly cookies over localStorage, and
- * that remains the right end state. This is a deliberate, documented gap for
- * the demo: cookie auth needs CSRF protection and a same-site story that the
- * split localhost:5173 / localhost:8000 origins do not currently give us.
- * Tracked in PROJECT_CONTEXT.md Known Issues.
+ * sessionStorage, not localStorage. localStorage is shared across every tab
+ * of the same browser, so two tabs signed in as different users (exactly the
+ * "rep in one window, manager in another" setup this app's own demo script
+ * asks for) fight over one stored session: whichever tab last touched
+ * storage silently evicts the other's login. sessionStorage is per-tab, so
+ * each tab keeps its own identity independent of what any other tab does,
+ * while still surviving a reload of that same tab.
+ *
+ * SECURITY_SPEC.md Section 7 prefers HttpOnly cookies over either Storage
+ * mechanism, and that remains the right end state. This is a deliberate,
+ * documented gap for the demo: cookie auth needs CSRF protection and a
+ * same-site story that the split localhost:5173 / localhost:8000 origins do
+ * not currently give us. Tracked in PROJECT_CONTEXT.md Known Issues.
  */
 const REFRESH_KEY = "dealflow.refresh";
 
@@ -28,7 +36,7 @@ let accessToken: string | null = null;
 
 export function getRefreshToken(): string | null {
   try {
-    return localStorage.getItem(REFRESH_KEY);
+    return sessionStorage.getItem(REFRESH_KEY);
   } catch {
     return null;
   }
@@ -37,8 +45,8 @@ export function getRefreshToken(): string | null {
 export function setTokens(access: string | null, refresh: string | null): void {
   accessToken = access;
   try {
-    if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
-    else localStorage.removeItem(REFRESH_KEY);
+    if (refresh) sessionStorage.setItem(REFRESH_KEY, refresh);
+    else sessionStorage.removeItem(REFRESH_KEY);
   } catch {
     /* private browsing — the session simply will not survive a reload */
   }
@@ -90,11 +98,22 @@ async function refreshAccessToken(): Promise<boolean> {
  * Access tokens live 15 minutes, so a demo will cross that boundary. On a
  * 401 we rotate once and replay the request; if the rotation also fails the
  * session is genuinely over and the caller sees a 401.
+ *
+ * The retry fires on ANY 401, not only when `accessToken` is already set.
+ * Gating it on an in-memory access token was the actual bug: on a fresh page
+ * load `accessToken` starts as null even when a perfectly valid refresh
+ * token is sitting in storage, so the very call meant to resume the session
+ * skipped the refresh path entirely, fell through to the generic 401, and
+ * `resume()` in auth.tsx reacted by wiping the stored token — turning "resume
+ * my session" into "log everyone out on every reload." `refreshAccessToken()`
+ * already returns false immediately when there is no stored refresh token,
+ * so dropping the guard does not risk looping on a genuinely unauthenticated
+ * request.
  */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response = await raw(path, init);
 
-  if (response.status === 401 && accessToken) {
+  if (response.status === 401) {
     if (await refreshAccessToken()) response = await raw(path, init);
   }
 

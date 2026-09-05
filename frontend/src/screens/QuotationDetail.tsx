@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
-import type { Product, Quotation, RiskPreview } from "../lib/api";
+import type { Product, Quotation, RiskPreview, SubscriptionPlan } from "../lib/api";
 import { humanise, money, percent, points } from "../lib/format";
 import {
   ErrorState,
@@ -29,6 +29,10 @@ interface DraftLine {
   quantity: string;
   discount_percent: string;
   added_from_upsell: boolean;
+  // Required for a subscription product, forbidden for a one-time product —
+  // the backend enforces this against the product's real item_type; this is
+  // just what lets the row show/collect the plan choice.
+  subscription_plan_id: number | null;
 }
 
 export default function QuotationDetail() {
@@ -37,6 +41,7 @@ export default function QuotationDetail() {
 
   const [quotation, setQuotation] = useState<Quotation | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
+  const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [risk, setRisk] = useState<RiskPreview | null>(null);
   const [draft, setDraft] = useState<DraftLine[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -61,17 +66,20 @@ export default function QuotationDetail() {
     setLoading(true);
     setError(null);
     try {
-      const [q, p] = await Promise.all([
+      const [q, p, plansList] = await Promise.all([
         api.get<Quotation>(`/quotations/${id}`),
         api.get<Product[]>("/products"),
+        api.get<SubscriptionPlan[]>("/subscription-plans"),
       ]);
       setQuotation(q);
       setProducts(p);
+      setPlans(plansList);
       const lines = q.lines.map((line) => ({
         product_id: line.product_id,
         quantity: line.quantity,
         discount_percent: line.discount_percent,
         added_from_upsell: line.added_from_upsell,
+        subscription_plan_id: line.subscription_plan_id,
       }));
       setDraft(lines);
       draftRef.current = lines;
@@ -105,6 +113,7 @@ export default function QuotationDetail() {
             quantity: Number(line.quantity) || 0,
             discount_percent: Number(line.discount_percent) || 0,
             added_from_upsell: line.added_from_upsell,
+            subscription_plan_id: line.subscription_plan_id,
           })),
         });
         setQuotation(updated);
@@ -137,9 +146,22 @@ export default function QuotationDetail() {
   );
 
   function addProduct(productId: number, fromUpsell = false) {
+    const product = products.find((p) => p.id === productId);
+    // A subscription line needs a plan the moment it's created — the CHECK
+    // constraint would reject a save with none, so default to the first
+    // active plan rather than saving a half-built line the rep then has to
+    // notice and fix via the (not-yet-visible-as-an-error) Plan column.
+    const defaultPlanId =
+      product?.item_type === "subscription" ? (plans[0]?.id ?? null) : null;
     const next = [
       ...draftRef.current,
-      { product_id: productId, quantity: "1", discount_percent: "0", added_from_upsell: fromUpsell },
+      {
+        product_id: productId,
+        quantity: "1",
+        discount_percent: "0",
+        added_from_upsell: fromUpsell,
+        subscription_plan_id: defaultPlanId,
+      },
     ];
     setDraft(next);
     draftRef.current = next;
@@ -330,6 +352,7 @@ export default function QuotationDetail() {
                     <th className="num">Price</th>
                     <th className="num">Discount</th>
                     <th className="num">Limit</th>
+                    <th>Plan</th>
                     <th>Status</th>
                     {editable && <th />}
                   </tr>
@@ -337,7 +360,7 @@ export default function QuotationDetail() {
                 <tbody>
                   {quotation.lines.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="muted" style={{ textAlign: "center" }}>
+                      <td colSpan={8} className="muted" style={{ textAlign: "center" }}>
                         No lines yet — add a product to begin.
                       </td>
                     </tr>
@@ -389,6 +412,31 @@ export default function QuotationDetail() {
                       </td>
                       <td className="num mono-num muted">
                         {percent(line.allowed_discount_percent)}
+                      </td>
+                      <td>
+                        {line.line_type !== "subscription" ? (
+                          <span className="muted">—</span>
+                        ) : editable ? (
+                          <select
+                            className="select"
+                            value={draft[index]?.subscription_plan_id ?? line.subscription_plan_id ?? ""}
+                            onChange={(e) => {
+                              updateLine(index, { subscription_plan_id: Number(e.target.value) });
+                              flush();
+                            }}
+                          >
+                            <option value="" disabled>
+                              Choose a plan…
+                            </option>
+                            {plans.map((plan) => (
+                              <option key={plan.id} value={plan.id}>
+                                {plan.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          line.subscription_plan_name ?? "—"
+                        )}
                       </td>
                       <td>
                         <OverLimitBadge over={line.is_over_limit} />

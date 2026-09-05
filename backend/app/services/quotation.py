@@ -130,6 +130,13 @@ async def load_quotation(session: AsyncSession, quotation_id: int) -> Quotation 
         .where(Quotation.id == quotation_id)
         .options(
             selectinload(Quotation.lines).selectinload(QuotationLine.product),
+            # Only populated for a subscription line, but eager-loaded
+            # unconditionally: `_line_response` reads `.subscription_plan.name`
+            # for every line, and skipping this for a one-time line (where
+            # it's always None) would still leave the attribute "unloaded"
+            # rather than "loaded as None" - same MissingGreenlet failure
+            # class as everywhere else in "Do Not Change".
+            selectinload(Quotation.lines).selectinload(QuotationLine.subscription_plan),
             selectinload(Quotation.customer),
             selectinload(Quotation.owner),
         )

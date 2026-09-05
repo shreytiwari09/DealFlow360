@@ -25,6 +25,8 @@ const STATUS_TONE: Record<string, Tone> = {
   backordered: "warning",
   partially_fulfilled: "warning",
   unpaid: "warning",
+  invoiced: "accent",
+  modified: "warning",
   approved: "success",
   confirmed: "success",
   active: "success",

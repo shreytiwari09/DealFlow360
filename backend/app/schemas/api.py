@@ -99,6 +99,10 @@ class QuotationLineResponse(BaseModel):
     line_discount_amount: Decimal
     line_total: Decimal
     added_from_upsell: bool
+    # Populated only for a subscription line — the builder's plan picker
+    # needs both to show the current selection and to know it's editable.
+    subscription_plan_id: int | None = None
+    subscription_plan_name: str | None = None
 
 
 class QuotationSummaryResponse(BaseModel):
@@ -145,6 +149,11 @@ class LineRequest(BaseModel):
     quantity: Decimal = Field(gt=0, le=Decimal("100000"))
     discount_percent: Decimal = Field(ge=0, le=100)
     added_from_upsell: bool = False
+    # Required for a subscription product, forbidden for a one-time product —
+    # enforced in the endpoint against the product's actual item_type, not
+    # trusted blindly (the same "never trust client-asserted shape" rule as
+    # everything else inbound). See PROJECT_CONTEXT.md Remaining Work #1.
+    subscription_plan_id: int | None = None
 
 
 class ReplaceLinesRequest(BaseModel):
@@ -319,3 +328,114 @@ class DashboardResponse(BaseModel):
     open_quotations: int
     at_risk_deals: int
     recent_activity: list[AuditEntryResponse]
+
+
+# --- Billing (PRD B7, FRONTEND.md Screens 9-10, 12-13) ---------------------
+
+
+class SubscriptionPlanResponse(BaseModel):
+    """The plan picker's data source (builder Screen 4)."""
+
+    id: int
+    code: str
+    name: str
+    billing_interval: str
+    interval_count: int
+    unit_amount: Decimal
+
+
+class ProrationRecordResponse(BaseModel):
+    """One row of a subscription's proration history (Screen 10).
+
+    Every input is returned alongside the result — Locked Business Rules #3 —
+    so the screen can show the calculation, not just its answer.
+    """
+
+    id: int
+    change_date: date
+    cycle_start: date
+    cycle_end: date
+    cycle_days: int
+    remaining_days: int
+    old_quantity: Decimal
+    new_quantity: Decimal
+    old_amount: Decimal
+    new_amount: Decimal
+    credit_amount: Decimal
+    charge_amount: Decimal
+    proration_amount: Decimal
+
+
+class BillingScheduleResponse(BaseModel):
+    """One row: a one-time invoice line, a recurring instalment, or a
+    proration adjustment — `schedule_type`/`is_credit_note` distinguish them."""
+
+    id: int
+    quotation_id: int
+    quote_number: str
+    subscription_id: int | None
+    schedule_type: str
+    status: str
+    due_date: date
+    amount: Decimal
+    cycle_start: date | None
+    cycle_end: date | None
+    invoice_number: str | None
+    invoiced_at: datetime | None
+    is_credit_note: bool
+
+
+class SubscriptionSummaryResponse(BaseModel):
+    """Row shape for the Subscriptions List (Screen 9)."""
+
+    id: int
+    quotation_id: int
+    quote_number: str
+    customer_name: str
+    product_name: str
+    plan_name: str
+    status: str
+    quantity: Decimal
+    unit_amount: Decimal
+    current_cycle_start: date
+    current_cycle_end: date
+
+
+class SubscriptionDetailResponse(SubscriptionSummaryResponse):
+    """Screen 10: adds the full billing-schedule and proration history."""
+
+    plan_id: int
+    billing_schedules: list[BillingScheduleResponse]
+    proration_history: list[ProrationRecordResponse]
+    can_act: bool
+
+
+class ModifySubscriptionRequest(BaseModel):
+    """At least one of the two must be set; the endpoint rejects a no-op."""
+
+    new_quantity: Decimal | None = Field(default=None, gt=0)
+    new_plan_id: int | None = None
+
+
+class PaymentResponse(BaseModel):
+    id: int
+    amount: Decimal
+    method: str
+    paid_at: datetime
+    reference: str | None
+    notes: str | None
+
+
+class InvoiceDetailResponse(BillingScheduleResponse):
+    """Screen 13."""
+
+    customer_name: str
+    payments: list[PaymentResponse]
+    can_act: bool
+
+
+class RecordPaymentRequest(BaseModel):
+    amount: Decimal = Field(gt=0)
+    method: str = Field(pattern="^(bank_transfer|card|cash|cheque|other)$")
+    reference: str | None = Field(default=None, max_length=120)
+    notes: str | None = Field(default=None, max_length=2000)

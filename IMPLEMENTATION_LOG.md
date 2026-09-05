@@ -583,3 +583,236 @@ be rejected, not just unused"). Documentation now says only things that are curr
 ### Next Recommended Step
 Unchanged: hybrid billing + proration (PRD B7), blocked first on adding a subscription-plan
 picker to the quotation builder so a subscription line can be created at all.
+
+---
+
+## 2026-09-06 — Rotate Postgres and JWT Secrets to Real Values
+
+### Goal
+User asked to move off the dev placeholder secrets (`POSTGRES_PASSWORD=change-me-locally`,
+`JWT_SECRET_KEY=dev-only-not-a-real-secret-replace-before-any-deploy`) to real, cryptographically
+generated values, without losing the data already seeded in the running database.
+
+### Implemented
+Generated both secrets with `secrets.token_urlsafe()` (32 bytes for the Postgres password, 48
+for the JWT signing key) run inside the backend container, so the values were never typed by a
+human and are never printed in full anywhere in this log or in the terminal transcript.
+
+Postgres only applies `POSTGRES_PASSWORD` when its data volume is first initialized — changing
+`.env` alone would leave the actual database role's password unchanged while the app tried to
+authenticate with the new one. Applied the new password live instead:
+`ALTER USER dealflow WITH PASSWORD '<new>';` run directly against the running `db` container,
+which changes the role in place with zero data loss. Verified row counts (`users`, `quotations`)
+before and after — unchanged.
+
+Updated `.env` with both new values, then hit a second real gotcha: `docker compose restart
+backend` does **not** re-read `.env` — it recreates the process but reuses the container's
+already-resolved environment from when it was created. The app kept authenticating with the
+stale password and 500'd (`asyncpg.exceptions.InvalidPasswordError`). Fixed by using `docker
+compose up -d backend` instead, which recreates the container and re-resolves its environment
+from the current `.env`.
+
+### Files Changed
+- `.env` (gitignored, not committed — values not reproduced here)
+
+### Important Decisions
+- Decision: rotate the Postgres password via `ALTER USER` against the live database rather than
+  recreating the `db` volume.
+- Reason: recreating the volume is destructive (wipes all seeded and demo data); `ALTER USER` is
+  the data-preserving equivalent and is exactly what a real production rotation would do.
+
+### Validation
+- Manual verification: health check returned `{"status":"ok",...,"database":"ok"}` after the
+  fix; logged in successfully as `rep@dealflow360.example`; `SELECT count(*) FROM users` still
+  returned 5 (unchanged) before and after; confirmed `.env` remains gitignored via `git
+  check-ignore -v .env`.
+
+### Known Issues
+Rotating the JWT signing key invalidates every previously issued access/refresh token — any
+browser tab still signed in from before this change needs to sign in again. Expected and
+correct, not a defect.
+
+### Current State
+The stack now runs on real, non-placeholder secrets for both Postgres and JWT signing, with no
+data loss. `.env.example` still documents the placeholder shape for a fresh clone to fill in
+its own values.
+
+### Next Recommended Step
+Hybrid billing + proration (PRD B7) — unchanged from the previous entry.
+
+---
+
+## 2026-09-06 — Hybrid Billing and Proration (Phase 3 step 6)
+
+### Goal
+Implement the last item in Phase 3's core backlog: hybrid billing (one-time + recurring lines
+on a single order) with mid-cycle proration, per PRD B7 and the formula locked in
+PROJECT_CONTEXT.md Locked Business Rules #3. Closes the prerequisite gap noted in every prior
+entry's "Next Recommended Step": the builder had no subscription-plan picker, so a subscription
+product could not be added to a quote at all.
+
+### Implemented
+
+**1. Closed the plan-picker gap.** `LineRequest` gained `subscription_plan_id`. `replace_lines`
+now validates it against the product's real `item_type` — a subscription product without a
+valid, active plan id is rejected (422), and a one-time product WITH one is equally rejected,
+rather than silently accepted or silently dropped. `_default_plan_id`, the stub that always
+returned `None`, is gone. `GET /catalog/subscription-plans` (used by both the builder's picker
+and the new billing screens) and `QuotationLineResponse.subscription_plan_id/_name` (so the
+builder can show and edit the current selection, not just set it once) round out the gap.
+
+**2. `app/services/billing.py`** — mirrors `risk.py`'s and `fulfillment.py`'s shape:
+- `compute_proration()` — pure, no I/O. Daily basis, `ROUND_HALF_UP` to 2dp, exactly the locked
+  formula. Reproduces the locked worked example's *intent* exactly (see Important Decisions for
+  a correction to the example's own numbers).
+- `add_billing_interval()` — pure calendar-month arithmetic for advancing a plan's cycle
+  (monthly/quarterly/yearly x `interval_count`), clamping day-of-month for shorter/leap-adjacent
+  months (Jan 31 + 1 month lands on Feb 28/29, never overflows into March).
+- `generate_billing_for_quotation()` — called from the same `CONFIRMED` transition that unlocks
+  fulfillment (Locked Business Rules #7's precedent: CONFIRMED is where every other part of this
+  system treats the order as real). Creates one `one_time` `BillingSchedule` row covering every
+  one-time line's tax-inclusive total, plus one `Subscription` + first-cycle `recurring`
+  `BillingSchedule` row per subscription line. Idempotent, same guard shape as
+  `generate_fulfillment`.
+- `modify_subscription()` / `cancel_subscription()` — mid-cycle quantity/plan change and
+  cancellation, both priced via `compute_proration()` and both recording a `ProrationRecord`
+  with every input alongside the result (Locked Business Rules #3's explicit requirement). A
+  plan's `refund_policy` (`none`/`prorated`/`full`) governs what cancellation credits.
+- `issue_invoice()` / `record_payment()` — `SCHEDULED -> INVOICED -> PAID`, each transition
+  guarded by `assert_transition()` like everything else in this codebase. Full-payment model:
+  no partial-payment ledger, matching PLAN.md's own quick-test flow ("record a payment, check
+  the invoice status updates").
+
+**3. Endpoints** (`app/api/v1/endpoints/billing.py`, prefix `/billing`): subscriptions
+list/detail/modify/cancel, invoices list/detail/issue/payments. View is open to any internal
+role, scoped by ownership the same way the quotations list is (a rep sees only their own
+orders' billing); every mutating action requires `billing.manage` (Finance/Ops + Admin), per
+FRONTEND.md's own "Roles" line for Screens 9-10 and 12-13.
+
+**4. Frontend:** Screens 9 (`SubscriptionsList.tsx`), 10 (`SubscriptionDetail.tsx` — the
+two-table one-time/recurring layout PRD B7 calls for, plus Modify/Cancel and the proration
+history table), 12 (`InvoicesList.tsx`), 13 (`InvoiceDetail.tsx` — Scheduled → Invoiced → Paid
+stepper, Issue Invoice and Record Payment actions). The quotation builder (Screen 4) gained a
+Plan column with a picker for subscription lines. Enabled the "Subscriptions" and "Invoices"
+sidebar items (were `pending: true`).
+
+### Files Changed
+- `backend/app/services/billing.py` (new)
+- `backend/app/api/v1/endpoints/billing.py` (new)
+- `backend/app/api/v1/endpoints/quotations.py` (plan-id validation; billing generation on confirm)
+- `backend/app/api/v1/endpoints/catalog.py` (`GET /subscription-plans`)
+- `backend/app/api/v1/router.py` (wired the new router)
+- `backend/app/services/quotation.py` (eager-load `QuotationLine.subscription_plan`)
+- `backend/app/models/audit.py` (`BILLING_SCHEDULE_GENERATED`, `INVOICE_ISSUED`)
+- `backend/app/schemas/api.py` (billing DTOs; `subscription_plan_id` on `LineRequest` and
+  `QuotationLineResponse`)
+- `backend/tests/test_billing.py` (new — 25 tests)
+- `frontend/src/screens/SubscriptionsList.tsx`, `SubscriptionDetail.tsx`, `InvoicesList.tsx`,
+  `InvoiceDetail.tsx` (new)
+- `frontend/src/screens/QuotationDetail.tsx` (Plan column and picker)
+- `frontend/src/layouts/InternalShell.tsx`, `App.tsx` (routes/nav enabled)
+- `frontend/src/lib/api.ts`, `frontend/src/components/ui.tsx` (billing types; new status tones)
+- `PROJECT_CONTEXT.md`, `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+
+- **Correction to the locked worked example.** PROJECT_CONTEXT.md's Locked Business Rules #3
+  worked example claimed credit 800.04 / charge 1200.06 / proration 400.02 for "1200 upgraded to
+  1800 on day 10 of a 30-day cycle." The exact fraction there is 20/30 = 2/3, and 1200 x 2/3 =
+  800 exactly (1200/3 x 2), not 800.04 — the original numbers came from hand-rounding 0.666... to
+  "0.6667" before multiplying, an artifact of doing the arithmetic by hand rather than an
+  intentional part of the formula. The FORMULA itself was never in question (daily basis,
+  `ROUND_HALF_UP` on the final `proration` figure) — only the example's own arithmetic was wrong.
+  Corrected the worked example in PROJECT_CONTEXT.md and added
+  `test_locked_worked_example_exactly` plus a second test
+  (`test_rounding_is_half_up_not_bankers_rounding`, 17 x 1/8 = 2.125 exactly) that actually
+  exercises a genuine rounding tie, since the original example turned out to have none.
+
+- Decision: billing generation triggers at `CONFIRMED`, the same point fulfillment does.
+- Reason: consistency with Locked Business Rules #7's own reasoning — CONFIRMED is the state
+  machine's agreed "this order is now real" point everywhere else in the codebase; inventing a
+  second trigger point for billing specifically would be arbitrary.
+
+- Decision: cancellation refund behavior branches on the plan's `refund_policy` (none/prorated/
+  full), with `full` crediting the entire current-cycle amount regardless of days remaining.
+- Reason: the model already commits to three named policies (PRD A5); implementing only
+  `prorated` and silently treating `full`/`none` the same would make two of three seeded values
+  meaningless.
+
+- Decision: Screen 10 (Billing Detail) fetches the order's other invoice rows client-side by
+  filtering `GET /billing/invoices` on `quotation_id`, rather than adding a dedicated
+  "one-time lines for this subscription's order" backend endpoint.
+- Reason: at this data scale a second network call plus a client-side filter is simpler than a
+  new endpoint shape, and keeps `/billing/subscriptions/{id}`'s response scoped to what it's
+  actually named for — that one subscription.
+
+### Validation
+- Tests: **170 backend tests pass** (145 prior + 25 new). Pure-logic coverage: the corrected
+  worked example, a downgrade (negative proration = credit note), change on the first/last day
+  of a cycle, an out-of-cycle change date rejected, `cycle_end <= cycle_start` rejected, a
+  genuine `ROUND_HALF_UP` vs. banker's-rounding tie, and `add_billing_interval` across
+  monthly/quarterly-with-count/yearly/leap-year/short-month cases. DB-level coverage: a hybrid
+  quotation generates both schedule types correctly, generation is idempotent, a subscription-
+  only order skips the one-time row, quantity/plan modification produces a correct proration
+  record and settles back to ACTIVE, all three refund policies on cancel, double-cancel
+  rejected, issue-then-pay settles an invoice, payment-before-invoicing rejected, invoice
+  numbers are sequential.
+- `ruff check .` / `ruff format --check .` clean. Frontend `tsc -b && vite build` clean.
+- Manual verification against real seeded PostgreSQL via a 40-check hand-written script driving
+  the actual HTTP API end to end: plan-picker validation in both directions (subscription line
+  without a plan rejected, one-time line with a plan rejected), a real hybrid order (one-time
+  Monitor + subscription Premium Support) built, submitted (skips approval, no discount),
+  confirmed, and its billing schedule inspected; quantity modify producing a positive proration
+  and settling back to `active`; issue → pay settling an invoice to `paid`; cancel producing a
+  negative (credit) proration; double-cancel rejected; and the rep's own view-only access to
+  their own order's subscriptions/invoices (`can_act: false`) confirmed separately from
+  Finance's full access.
+
+**One real bug found and fixed during this work, the same failure class as before but in a new
+shape:** `modify_subscription()`, `cancel_subscription()` and `record_payment()` each added a
+child row (`ProrationRecord`, an adjustment `BillingSchedule`, a `Payment`) via `session.add(...)`
+rather than the parent's relationship `.append(...)` — the now-familiar pattern. What made this
+instance new: the *unit tests* didn't catch it, because each test called the service function
+directly and inspected the *returned* record, never the parent object's collection. The 40-check
+live-API script did catch it immediately, because the API layer re-fetches the parent inside the
+*same request session* right after committing — and since that parent object was already sitting
+in the session's identity map (loaded once, earlier in the same request, with the affected
+collection eager-loaded as empty), a second `SELECT ... selectinload(...)` does not force a
+reload of an already-populated collection on an identity-mapped object. The commit succeeded and
+the row genuinely existed in the database; the in-memory object handed back to the client just
+still showed the pre-write snapshot. Fixed with an explicit `session.refresh(parent,
+attribute_names=[...])` at the end of all three functions, matching `generate_fulfillment`'s
+existing fix — and added regression assertions to the unit tests that read the collection off
+the *same* object `modify_subscription`/`cancel_subscription`/`record_payment` was given,
+which is the only way those tests could have caught this themselves.
+
+### Known Issues
+- Screen 10's two-table layout is assembled from two separate API calls
+  (`/billing/subscriptions/{id}` + a client-side filter of `/billing/invoices`) rather than one
+  purpose-built response — see Important Decisions. Fine at this data scale; would need
+  revisiting if an order's invoice list ever got large enough to paginate.
+- No background job renews a subscription's cycle when `current_cycle_end` passes, or notifies
+  anyone a recurring instalment is due — both would need a scheduler, out of scope here (same
+  category of gap as fulfillment's "backorder consolidation isn't automatically prompted").
+- The frontend's Modify Subscription form always shows the full plan list, including the plan
+  the subscription is already on — harmless, but means "no plan change" always sends
+  `new_plan_id` equal to the current value rather than omitting it, which the backend already
+  ignores as a no-op.
+- Full browser click-through (as opposed to the 40-check live-API script, which exercises the
+  same endpoints the UI calls) was not run this round for the four new screens — `tsc -b && vite
+  build` confirms they compile and type-check against the real API responses, but no one has
+  clicked through them in an actual browser yet.
+
+### Current State
+Phase 3 is now complete end to end: a rep can build a hybrid quotation (one-time + subscription
+lines), submit, confirm, and see fulfillment and billing both generate automatically at the same
+trigger point. Finance can accept/override a warehouse split, modify or cancel a subscription
+with correct mid-cycle proration, and take an invoice through Scheduled → Invoiced → Paid. Every
+number involved — risk score, proration, invoice amounts — is computed with `Decimal` and an
+explicit rounding rule, never `float` or the builtin `round()`.
+
+### Next Recommended Step
+PROJECT_CONTEXT.md's backlog, next two items: (1) Customer portal negotiation (PRD B8, Screen
+11) — the portal shell exists and correctly refuses internal screens, but the negotiation screen
+itself is still a placeholder; (2) Upsell panel wired to real `upsell_rules` data (PRD B5) — 7
+rules are seeded but the builder currently just shows promoted products as a stand-in.

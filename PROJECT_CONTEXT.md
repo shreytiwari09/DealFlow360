@@ -3,18 +3,20 @@
 ## Current Objective
 Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.md Section 18), sequenced: 🔴 Core workflow fully working first, then 🟡 Supporting, then 🟢 Bonus only if ahead of schedule. Database and business-logic correctness are being treated as first-class judging criteria, not implementation afterthoughts.
 
-**Where we are right now:** Phases 1, 2 and the first half of Phase 3 are complete, plus a
-Phase 8 frontend slice brought forward at the user's request. **There is a working, demoable
-application** — see `DEMO.md`, the verified script to run in front of an interviewer, which also
-lists exactly what is and is not built.
+**Where we are right now:** Phases 1, 2 and 3 are complete, plus a Phase 8 frontend slice
+brought forward at the user's request. **There is a working, demoable application** — see
+`DEMO.md`, the verified script to run in front of an interviewer, which covers the approval
+flows and lists exactly what is and is not built (it does not yet cover fulfillment or billing —
+see its own note).
 
-Working end to end: login for all five roles, quotation builder with a live blended risk score,
-automatic approval routing (including the sequential two-step Manager→Finance chain), approve /
-reject / return-for-revision with a mandatory reason, and a full audit trail. Screens 1-6 of
-`FRONTEND.md` are built.
+Working end to end: login for all five roles, quotation builder with a live blended risk score
+and a subscription-plan picker for hybrid lines, automatic approval routing (including the
+sequential two-step Manager→Finance chain), approve / reject / return-for-revision with a
+mandatory reason, a full audit trail, multi-warehouse fulfillment with backorders, and hybrid
+billing with daily-basis mid-cycle proration. Screens 1-10, 12 and 13 of `FRONTEND.md` are built.
 
-**Next: the rest of Phase 3** — warehouse split and backorders, hybrid billing and proration,
-then the customer portal negotiation screen. See "Remaining Work" for the ordered backlog.
+**Next:** the customer portal negotiation screen, then the upsell panel wired to real data. See
+"Remaining Work" for the ordered backlog.
 
 **Source-of-truth documents:** `PLAN.md` (process and order), `PROJECT_CONTEXT.md` (this file),
 `IMPLEMENTATION_LOG.md` (history), `SECURITY_SPEC.md` (security contract), `FRONTEND.md`
@@ -282,11 +284,21 @@ proration = ROUND_HALF_UP(charge - credit, 2)
 Worked example — 1200/month upgraded to 1800/month on day 10 of a 30-day cycle:
 
 ```
-remaining = 20/30
-credit    = 1200 x 0.666... =  800.04
-charge    = 1800 x 0.666... = 1200.06
-proration =                     400.02
+remaining = 20/30 = 2/3
+credit    = 1200 x 2/3 =  800.00
+charge    = 1800 x 2/3 = 1200.00
+proration =               400.00
 ```
+
+> **Correction (2026-09-06):** this example previously read 800.04 / 1200.06 / 400.02. Those
+> came from hand-rounding 0.666... to "0.6667" before multiplying — an arithmetic slip in the
+> example, not a property of the formula. 20/30 reduces to exactly 2/3, and 1200 x 2/3 = 800 with
+> nothing left to round away. The formula itself (full-precision division, `ROUND_HALF_UP`
+> applied once at the end) was never wrong; only this example's own numbers were. Found while
+> writing `test_locked_worked_example_exactly` in `backend/tests/test_billing.py` — see
+> `IMPLEMENTATION_LOG.md` 2026-09-06 "Hybrid Billing and Proration." A genuine rounding tie (where
+> `ROUND_HALF_UP` actually differs from Python's `round()`) is covered separately by
+> `test_rounding_is_half_up_not_bankers_rounding` (17 x 1/8 = 2.125 exactly -> 2.13, not 2.12).
 
 **Implementation notes:**
 - Use `decimal.Decimal` with an explicit `ROUND_HALF_UP` quantize. Python's built-in
@@ -294,6 +306,7 @@ proration =                     400.02
 - Store `cycle_start`, `cycle_end`, `change_date`, `old_amount`, `new_amount` and the
   computed `proration` in `proration_records`. Storing only the result makes a billing
   dispute unanswerable.
+- Implemented in `backend/app/services/billing.py`'s `compute_proration()`.
 - A downgrade yields a negative proration, which becomes the credit note PRD B7 requires.
 
 ### 4. Order-Level Discount — LOCKED
@@ -570,6 +583,16 @@ dedicated unit tests for each tiebreak level independently, and confirmed determ
 real seeded data across repeated runs. No longer "proceeding on an assumption" — it is built,
 tested, and documented in Locked Business Rules #7.
 
+**Resolved 2026-09-06 — the subscription-plan-picker gap is closed, and Locked Business Rules
+#3's worked example is corrected.** The builder can now put a subscription line on a quote
+(`LineRequest.subscription_plan_id`, validated against the product's real `item_type`); hybrid
+billing and mid-cycle proration are fully implemented in `app/services/billing.py`. Separately,
+while writing the test that reproduces #3's worked example exactly, found the example's own
+numbers (800.04 / 1200.06 / 400.02) were a hand-rounding artifact, not the correct output of the
+locked formula (the exact answer is 800.00 / 1200.00 / 400.00) — corrected in place; see that
+section for the full explanation and `IMPLEMENTATION_LOG.md` 2026-09-06 "Hybrid Billing and
+Proration."
+
 **Still open — needed before the phase that depends on each (PLAN.md Section 0.6):**
 - **Deal health anomaly thresholds not yet defined** — blocks the Phase 5 dashboard.
   Specifically: how many days of inactivity makes a quote "stalled", and how far above a
@@ -613,13 +636,14 @@ tested, and documented in Locked Business Rules #7.
   and database constraints proven against real PostgreSQL
 - ERD checked in at `docs/erd.md`, all 10 diagrams machine-parsed
 
-**Phase 3 (Core Business Workflow): steps 1-5 and 8 complete.**
+**Phase 3 (Core Business Workflow): complete — all 8 steps.**
 - Blended risk engine and approval router in `app/services/risk.py` — pure, `Decimal`, 35 tests
 - Idempotent seed data covering RBAC, catalogue, the full ceiling matrix, chains, stock and rules
 - Login for all five roles; Argon2id, JWT with an explicit algorithm allowlist, refresh rotation
   with reuse detection, slowapi rate limiting on login and refresh
 - Permission-based authorization plus separate resource-ownership checks, all in `api/deps.py`
-- Quotation API with a single recalculation writer for totals, margin and risk
+- Quotation API with a single recalculation writer for totals, margin and risk, and a
+  subscription-plan picker so a hybrid (one-time + recurring) order can actually be built
 - Automatic approval routing including the sequential two-step Manager→Finance chain
 - **Warehouse split + backorders** — greedy fill in `app/services/fulfillment.py` (pure, mirrors
   `risk.py`'s shape), reserving stock atomically via `SELECT ... FOR UPDATE` at the moment a
@@ -628,41 +652,38 @@ tested, and documented in Locked Business Rules #7.
   Consolidate Remaining Backorder (manually triggered — see Known Issues for the "automatic"
   half). See Locked Business Rules #7 for the CONFIRMED-status trigger point and the internal
   `POST /quotations/{id}/confirm` stand-in this required.
-- Audit trail on every create, edit, submission, approval, rejection, fulfillment action and
-  denial
-- Not yet: hybrid billing (step 6), portal negotiation (step 7)
+- **Hybrid billing + proration** — `app/services/billing.py` (pure `compute_proration()` and
+  `add_billing_interval()`, then DB orchestration), generated at the same CONFIRMED trigger point
+  as fulfillment. Covers PRD B7's full surface: a one-time invoice row plus a recurring
+  `Subscription` for each subscription line, mid-cycle quantity/plan modification with a full
+  `ProrationRecord` audit trail, cancellation with policy-driven refunds (none/prorated/full),
+  and `Scheduled → Invoiced → Paid` invoicing with payment recording.
+- Audit trail on every create, edit, submission, approval, rejection, fulfillment action,
+  billing action and denial
 
-**Phase 8 (Frontend): Screens 1-8 built.** Screens 1-6 brought forward at the user's request once
-`FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment List/Detail) followed
-immediately once their backend existed. Screens 9-18 appear in the sidebar explicitly disabled
-rather than as links to empty pages.
+**Phase 8 (Frontend): Screens 1-10, 12 and 13 built.** Screens 1-6 brought forward at the user's
+request once `FRONTEND.md` supplied the design input; Screens 7-8 (Fulfillment) and 9-10, 12-13
+(Subscriptions/Invoices) followed immediately once their respective backends existed. Screen 11
+(customer portal negotiation) and 14-18 appear in the sidebar explicitly disabled, or don't exist
+yet for the portal shell, rather than as links to empty pages.
 
-**Verified 2026-09-06:** 145 unit/integration tests (124 + 21 new fulfillment tests) plus 56 + 51
-end-to-end API checks all pass, and every flow — including Confirm → auto-generated split →
-Accept, Manual Override, and Consolidate-after-restock — was driven through the real UI
-headlessly with no runtime errors. `DEMO.md` records the expected numbers for the flows it
-covers; the fulfillment flow's numbers are recorded in Locked Business Rules #7 and
-IMPLEMENTATION_LOG.md instead, pending a DEMO.md update.
+**Verified 2026-09-06:** 170 unit/integration tests (145 + 25 new billing tests) plus 56 + 51 +
+40 end-to-end API checks all pass. Fulfillment's flows (Confirm → auto-generated split → Accept,
+Manual Override, Consolidate-after-restock) were driven through the real UI headlessly; the
+billing screens compile and type-check against the real API (`tsc -b && vite build` clean) and
+were verified via the live-API script, but have not yet had a full browser click-through — see
+`IMPLEMENTATION_LOG.md`'s Known Issues for that entry. `DEMO.md` records the expected numbers for
+the approval flows it covers; the fulfillment and billing flows' numbers are recorded in Locked
+Business Rules #7/#3 and IMPLEMENTATION_LOG.md instead, pending a DEMO.md update.
 
 ## Remaining Work
 
 Ordered backlog. Everything below already has schema support — the data model was built for the
 full PRD in Phase 2, so none of it needs a migration for its core tables.
 
-### Next up — finish Phase 3 (Core)
+### Next up
 
-1. **Hybrid billing + proration** (PRD B7, Screens 9-10, 12-13)
-   - Proration is locked (#3): daily basis, `ROUND_HALF_UP` to 2dp, with `Decimal` — never
-     Python's built-in `round()`, which is banker's rounding
-   - Store every input beside the result in `proration_records`, or a billing dispute is
-     unanswerable
-   - **Close this gap first:** `quotation_lines` has a CHECK requiring a subscription line to
-     carry a plan, but the builder has no plan picker, so subscription products cannot yet be
-     added to a quote. See `_default_plan_id` in the quotations endpoint.
-   - Tables ready: `subscription_plans`, `subscriptions`, `billing_schedules`,
-     `proration_records`, `payments`
-
-2. **Customer portal negotiation** (PRD B8, Screen 11)
+1. **Customer portal negotiation** (PRD B8, Screen 11)
    - Needs its own endpoints under `portal.*` permissions — NOT a filtered view of the internal
      list. The portal shell exists and correctly refuses internal screens; only the negotiation
      screen itself is a placeholder
@@ -670,17 +691,17 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
      why decided approvals are terminal in the state machine
    - `under_negotiation` and its transitions are already implemented and tested
 
-3. **Upsell panel wired to `upsell_rules`** (PRD B5)
+2. **Upsell panel wired to `upsell_rules`** (PRD B5)
    - 7 rules are seeded. The builder currently shows promoted products as a stand-in; it needs
      the real co-purchase lookup, the margin-delta figure and the `Dismiss` action
 
 ### Then Phase 5 (Supporting)
 
-5. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
-6. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
-7. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
+3. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
+4. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
+5. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
    configurable at runtime, only the UI is missing
-8. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
+6. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
 
 ### Deferred deliberately
 
@@ -694,6 +715,10 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
   background job watching for restocks. What exists now (`POST
   /fulfillment/{id}/backorders/{id}/consolidate`) is the manual trigger that prompt would call;
   an ops/finance user has to check and click it themselves rather than being notified
+- **Automatic subscription cycle renewal and dunning** — nothing rolls `current_cycle_start`/
+  `current_cycle_end` forward when a cycle ends, or generates the next `recurring`
+  `BillingSchedule` row automatically. Every subscription created by the demo stays on its first
+  cycle indefinitely. Same category of gap as backorder consolidation — needs a scheduler
 - **Restricting public signup** — signup grants an empty internal workspace to anyone. Acceptable
   for a hackathon, wrong for production; belongs in the "what we'd build next" deliverable
 - Bonus scope (multi-currency, multi-company) — untouched, correctly
@@ -719,10 +744,18 @@ full PRD in Phase 2, so none of it needs a migration for its core tables.
 - **Any ORM object returned from a service function that was populated via bare
   `session.add(...)` (not `parent.children.append(...)`) must have its collection
   relationships explicitly `session.refresh(...)`'d before return.** This is not
-  hypothetical — it caused two real bugs in this codebase (`auth.py`'s `_USER_LOADS`, and
-  `generate_fulfillment`'s missing refresh, both `MissingGreenlet` under async). The API
-  layer papering over it by re-querying afterward is not a substitute for fixing it at the
-  source; a future caller that doesn't happen to re-query will hit it again
+  hypothetical — it caused three real bugs in this codebase (`auth.py`'s `_USER_LOADS`,
+  `generate_fulfillment`'s missing refresh, and `modify_subscription`/`cancel_subscription`/
+  `record_payment`'s missing refresh — all `MissingGreenlet` or silently-stale-collection
+  failures under async). **"The caller re-queries afterward" is not a safe substitute even
+  when it looks like one**: if the caller's re-query runs in the SAME session and the parent
+  object is already in that session's identity map (already loaded once earlier in the same
+  request), SQLAlchemy returns the cached object with its already-populated collections
+  UNCHANGED — a second `SELECT ... selectinload(...)` does not force a reload of a collection
+  that object already has loaded. This is exactly how the billing bug survived pytest (each
+  test read the function's *return value*, never the parent's collection) but was caught
+  immediately by the live-API script (the API layer's own re-fetch-after-commit pattern hit
+  it on the very first request). Fix it at the source, in the service function, always
 - Server-side role + resource-ownership enforcement — never move checks to frontend-only
 - State machine transition rules — do not allow invalid transitions to pass silently
 - `POSTGRES_PASSWORD` / `JWT_SECRET_KEY` must stay required settings with no in-code default

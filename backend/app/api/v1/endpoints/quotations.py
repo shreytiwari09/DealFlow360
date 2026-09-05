@@ -19,6 +19,7 @@ from app.api.deps import (
     user_permissions,
 )
 from app.models.audit import AuditAction
+from app.models.billing import SubscriptionPlan
 from app.models.catalog import Product
 from app.models.customer import Customer
 from app.models.enums import ItemType, QuotationStatus, RoleCode
@@ -36,6 +37,7 @@ from app.schemas.api import (
 )
 from app.services import audit
 from app.services.approval import raise_approval_request, risk_band
+from app.services.billing import generate_billing_for_quotation
 from app.services.quotation import load_quotation, next_quote_number, recalculate
 from app.services.state_machine import InvalidStateTransition, assert_transition
 
@@ -68,6 +70,8 @@ def _line_response(line: QuotationLine) -> QuotationLineResponse:
         line_discount_amount=line.line_discount_amount,
         line_total=line.line_total,
         added_from_upsell=line.added_from_upsell,
+        subscription_plan_id=line.subscription_plan_id,
+        subscription_plan_name=line.subscription_plan.name if line.subscription_plan else None,
     )
 
 
@@ -229,6 +233,30 @@ async def replace_lines(
     if missing:
         raise HTTPException(status_code=422, detail="Unknown product on one or more lines.")
 
+    plan_ids = {item.subscription_plan_id for item in payload.lines if item.subscription_plan_id}
+    plans: dict[int, SubscriptionPlan] = {}
+    if plan_ids:
+        rows = (
+            await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id.in_(plan_ids)))
+        ).scalars()
+        plans = {plan.id: plan for plan in rows if plan.is_active}
+
+    for item in payload.lines:
+        product = products[item.product_id]
+        if product.item_type == ItemType.SUBSCRIPTION:
+            if item.subscription_plan_id is None or item.subscription_plan_id not in plans:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{product.name}' is a subscription product and requires a valid "
+                    "subscription_plan_id.",
+                )
+        elif item.subscription_plan_id is not None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{product.name}' is a one-time product and must not specify a "
+                "subscription_plan_id.",
+            )
+
     for line in list(quotation.lines):
         await session.delete(line)
     await session.flush()
@@ -247,9 +275,9 @@ async def replace_lines(
                 tax_rate=product.tax_rate,
                 discount_percent=item.discount_percent,
                 line_type=product.item_type,
-                subscription_plan_id=None
-                if product.item_type == ItemType.ONE_TIME
-                else _default_plan_id(product),
+                subscription_plan_id=item.subscription_plan_id
+                if product.item_type == ItemType.SUBSCRIPTION
+                else None,
                 added_from_upsell=item.added_from_upsell,
                 created_by=user.id,
             )
@@ -271,17 +299,6 @@ async def replace_lines(
     await session.commit()
 
     return _detail(await load_quotation(session, quotation.id), user)
-
-
-def _default_plan_id(product: Product) -> int | None:
-    """Subscription lines need a plan (database CHECK enforces it).
-
-    Wiring product-to-plan selection into the builder is Phase 3 step 6 work;
-    until then a subscription product cannot be added, and returning None here
-    surfaces that as a clear 422 from the constraint rather than a silent
-    half-built line. FRONTEND.md Screen 4 does not yet specify a plan picker.
-    """
-    return None
 
 
 @router.post("/{quotation_id}/order-discount", response_model=QuotationResponse)
@@ -452,5 +469,22 @@ async def confirm_quotation(
         reason="confirmed (internal stand-in for customer portal confirmation)",
         request=request,
     )
+
+    # Billing is locked in at the same trigger point as fulfillment (Locked
+    # Business Rules #7): CONFIRMED is where every other part of this system
+    # treats the order as real. Generates the one-time invoice line and one
+    # Subscription + first-cycle schedule per subscription line.
+    schedules = await generate_billing_for_quotation(session, quotation, actor_id=user.id)
+    if schedules:
+        await audit.record(
+            session,
+            action=AuditAction.BILLING_SCHEDULE_GENERATED,
+            user_id=user.id,
+            resource="quotation",
+            resource_id=quotation.id,
+            reason=f"{len(schedules)} billing schedule row(s) generated",
+            request=request,
+        )
+
     await session.commit()
     return _detail(await load_quotation(session, quotation.id), user)

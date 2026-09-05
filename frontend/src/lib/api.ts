@@ -189,6 +189,8 @@ export interface QuotationLine {
   line_discount_amount: string;
   line_total: string;
   added_from_upsell: boolean;
+  subscription_plan_id: number | null;
+  subscription_plan_name: string | null;
 }
 
 export interface QuotationSummary {
@@ -340,4 +342,83 @@ export interface DashboardSummary {
   open_quotations: number;
   at_risk_deals: number;
   recent_activity: AuditEntry[];
+}
+
+// --- Billing (PRD B7, FRONTEND.md Screens 9-10, 12-13) --------------------
+
+export interface SubscriptionPlan {
+  id: number;
+  code: string;
+  name: string;
+  billing_interval: string;
+  interval_count: number;
+  unit_amount: string;
+}
+
+export interface ProrationRecord {
+  id: number;
+  change_date: string;
+  cycle_start: string;
+  cycle_end: string;
+  cycle_days: number;
+  remaining_days: number;
+  old_quantity: string;
+  new_quantity: string;
+  old_amount: string;
+  new_amount: string;
+  credit_amount: string;
+  charge_amount: string;
+  proration_amount: string;
+}
+
+export interface BillingScheduleRow {
+  id: number;
+  quotation_id: number;
+  quote_number: string;
+  subscription_id: number | null;
+  schedule_type: string;
+  status: string;
+  due_date: string;
+  amount: string;
+  cycle_start: string | null;
+  cycle_end: string | null;
+  invoice_number: string | null;
+  invoiced_at: string | null;
+  is_credit_note: boolean;
+}
+
+export interface SubscriptionSummary {
+  id: number;
+  quotation_id: number;
+  quote_number: string;
+  customer_name: string;
+  product_name: string;
+  plan_name: string;
+  status: string;
+  quantity: string;
+  unit_amount: string;
+  current_cycle_start: string;
+  current_cycle_end: string;
+}
+
+export interface SubscriptionDetail extends SubscriptionSummary {
+  plan_id: number;
+  billing_schedules: BillingScheduleRow[];
+  proration_history: ProrationRecord[];
+  can_act: boolean;
+}
+
+export interface Payment {
+  id: number;
+  amount: string;
+  method: string;
+  paid_at: string;
+  reference: string | null;
+  notes: string | null;
+}
+
+export interface InvoiceDetail extends BillingScheduleRow {
+  customer_name: string;
+  payments: Payment[];
+  can_act: boolean;
 }

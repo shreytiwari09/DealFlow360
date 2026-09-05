@@ -25,8 +25,8 @@ const NAV: NavEntry[] = [
   { to: "/quotations", label: "Quotations" },
   { to: "/approvals", label: "Approvals" },
   { to: "/fulfillment", label: "Fulfillment" },
-  { to: "/subscriptions", label: "Subscriptions", pending: true },
-  { to: "/invoices", label: "Invoices", pending: true },
+  { to: "/subscriptions", label: "Subscriptions" },
+  { to: "/invoices", label: "Invoices" },
   { to: "/deal-health", label: "Deal Health", pending: true },
   { to: "/reports", label: "Reports", pending: true, permission: "report.view" },
   {

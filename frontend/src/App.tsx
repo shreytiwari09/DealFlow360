@@ -21,6 +21,10 @@ import ApprovalsList from "./screens/ApprovalsList";
 import ApprovalDetail from "./screens/ApprovalDetail";
 import FulfillmentList from "./screens/FulfillmentList";
 import FulfillmentDetail from "./screens/FulfillmentDetail";
+import SubscriptionsList from "./screens/SubscriptionsList";
+import SubscriptionDetail from "./screens/SubscriptionDetail";
+import InvoicesList from "./screens/InvoicesList";
+import InvoiceDetail from "./screens/InvoiceDetail";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -76,6 +80,10 @@ export default function App() {
             <Route path="/approvals/:id" element={<ApprovalDetail />} />
             <Route path="/fulfillment" element={<FulfillmentList />} />
             <Route path="/fulfillment/:id" element={<FulfillmentDetail />} />
+            <Route path="/subscriptions" element={<SubscriptionsList />} />
+            <Route path="/subscriptions/:id" element={<SubscriptionDetail />} />
+            <Route path="/invoices" element={<InvoicesList />} />
+            <Route path="/invoices/:id" element={<InvoiceDetail />} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

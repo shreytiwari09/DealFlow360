@@ -7,9 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentUser, SessionDep
+from app.models.billing import SubscriptionPlan
 from app.models.catalog import Product
 from app.models.customer import Customer
-from app.schemas.api import CustomerResponse, ProductResponse
+from app.schemas.api import CustomerResponse, ProductResponse, SubscriptionPlanResponse
 
 router = APIRouter(tags=["catalog"])
 
@@ -39,6 +40,36 @@ async def list_products(session: SessionDep, user: CurrentUser) -> list[ProductR
             tax_rate=p.tax_rate,
             item_type=p.item_type,
             is_promoted=p.is_promoted,
+        )
+        for p in rows
+    ]
+
+
+@router.get("/subscription-plans", response_model=list[SubscriptionPlanResponse])
+async def list_subscription_plans(
+    session: SessionDep, user: CurrentUser
+) -> list[SubscriptionPlanResponse]:
+    """The builder's plan picker (FRONTEND.md Screen 4) — one dropdown per
+    subscription line, populated from here rather than free text."""
+    rows = (
+        (
+            await session.execute(
+                select(SubscriptionPlan)
+                .where(SubscriptionPlan.is_active.is_(True))
+                .order_by(SubscriptionPlan.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        SubscriptionPlanResponse(
+            id=p.id,
+            code=p.code,
+            name=p.name,
+            billing_interval=p.billing_interval,
+            interval_count=p.interval_count,
+            unit_amount=p.unit_amount,
         )
         for p in rows
     ]

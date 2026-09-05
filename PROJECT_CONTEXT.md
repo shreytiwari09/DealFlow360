@@ -3,10 +3,22 @@
 ## Current Objective
 Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.md Section 18), sequenced: 🔴 Core workflow fully working first, then 🟡 Supporting, then 🟢 Bonus only if ahead of schedule. Database and business-logic correctness are being treated as first-class judging criteria, not implementation afterthoughts.
 
-**Where we are right now:** Phases 1 (Foundation) and 2 (Core Data Model) are complete and
-validated. 30 tables are under Alembic migration control, six state machines are enforced in
-code, and the ERD is checked in at `docs/erd.md`. **Phase 3 (Core Business Workflow) is
-next**, starting with the blended risk engine, whose formula is already locked below.
+**Where we are right now:** Phases 1, 2 and the first half of Phase 3 are complete, plus a
+Phase 8 frontend slice brought forward at the user's request. **There is a working, demoable
+application** — see `DEMO.md`, the verified script to run in front of an interviewer, which also
+lists exactly what is and is not built.
+
+Working end to end: login for all five roles, quotation builder with a live blended risk score,
+automatic approval routing (including the sequential two-step Manager→Finance chain), approve /
+reject / return-for-revision with a mandatory reason, and a full audit trail. Screens 1-6 of
+`FRONTEND.md` are built.
+
+**Next: the rest of Phase 3** — warehouse split and backorders, hybrid billing and proration,
+then the customer portal negotiation screen. See "Remaining Work" for the ordered backlog.
+
+**Source-of-truth documents:** `PLAN.md` (process and order), `PROJECT_CONTEXT.md` (this file),
+`IMPLEMENTATION_LOG.md` (history), `SECURITY_SPEC.md` (security contract), `FRONTEND.md`
+(screens and visual system), `DEMO.md` (what to show, and what not to claim).
 
 ## Product Understanding
 DealFlow360 is a self-governing B2B sales operations platform — a full quote-to-cash system, not a simple quote-to-invoice tool. Core value: automatic discount discipline (blended risk scoring), real-time multi-warehouse inventory awareness, reconciled one-time + recurring billing on a single order, and a live customer negotiation portal.
@@ -561,35 +573,82 @@ and ceiling matrix are all locked here.
   and database constraints proven against real PostgreSQL
 - ERD checked in at `docs/erd.md`, all 10 diagrams machine-parsed
 
-**Phase 3 (Core Business Workflow): in progress.**
-- Section 0.5 checkpoint run; three dependencies adopted (argon2-cffi, PyJWT, slowapi)
-- Blended risk engine and approval router implemented in `app/services/risk.py` - pure,
-  `Decimal` throughout, 35 tests including both PRD Section 10 worked examples, every band
-  boundary at its exact edge, and the single-line gate tested independently of the demo paths
-- Argon2id password hashing in `app/core/security.py`
-- Idempotent seed data covering RBAC, customers, catalogue, price lists, the full ceiling
-  matrix, approval chains, warehouses, stock, subscription plans and upsell rules
-- 124 tests pass
+**Phase 3 (Core Business Workflow): steps 1-4 and 8 complete.**
+- Blended risk engine and approval router in `app/services/risk.py` — pure, `Decimal`, 35 tests
+- Idempotent seed data covering RBAC, catalogue, the full ceiling matrix, chains, stock and rules
+- Login for all five roles; Argon2id, JWT with an explicit algorithm allowlist, refresh rotation
+  with reuse detection, slowapi rate limiting on login and refresh
+- Permission-based authorization plus separate resource-ownership checks, all in `api/deps.py`
+- Quotation API with a single recalculation writer for totals, margin and risk
+- Automatic approval routing including the sequential two-step Manager→Finance chain
+- Audit trail on every create, edit, submission, approval, rejection and denial
+- Not yet: warehouse split (step 5), hybrid billing (step 6), portal negotiation (step 7)
 
-Not yet built: login/JWT endpoints, quotation CRUD, approval workflow endpoints, warehouse
-split, billing, portal.
+**Phase 8 (Frontend): Screens 1-6 built**, brought forward at the user's request once
+`FRONTEND.md` supplied the design input. Screens 7-18 appear in the sidebar explicitly disabled
+rather than as links to empty pages.
+
+**Verified 2026-09-05:** 124 unit/integration tests plus 56 end-to-end API checks all pass, and
+both demo flows were driven through the real UI headlessly with no runtime errors. `DEMO.md`
+records the expected numbers.
 
 ## Remaining Work
-Mirrors PLAN.md Section 18. No 🔴 Core / 🟡 Supporting / 🟢 Bonus *behaviour* is implemented
-yet — Phases 1 and 2 delivered the foundation and the schema that every feature sits on.
 
-Next: **Phase 3 (Core Business Workflow)**, in the order PLAN.md Section 8 gives:
-1. Login for all five roles
-2. Quotation builder (lines, discounts, live totals and margin)
-3. Blended risk engine — formula already locked, see Locked Business Rules #1
-4. Approval routing — reads `approval_chains`, applies the single-line gate
-5. Multi-warehouse split + backorders
-6. Hybrid billing + proration
-7. Customer portal negotiation with automatic re-approval
-8. Audit trail on every approval/rejection/edit
+Ordered backlog. Everything below already has schema support — the data model was built for the
+full PRD in Phase 2, so none of it needs a migration for its core tables.
 
-Seed data (roles, permissions, the five demo users, discount tiers, the three approval-chain
-rows, warehouses, products) is a prerequisite for step 1 and does not exist yet.
+### Next up — finish Phase 3 (Core)
+
+1. **Warehouse split + backorders** (PRD B6, FRONTEND.md Screens 7-8)
+   - Greedy fill ordered by `shipping_cost_weight`, then highest available stock, then lowest
+     `warehouse_id` — that last key is what makes the split deterministic across demo runs
+   - Must read stock with `SELECT ... FOR UPDATE`; two confirmations racing would otherwise
+     double-sell the same units
+   - Seed already stages it: Laptop is 6 in Main + 3 in East, so a 10-unit order splits across
+     both AND leaves a backorder of 1
+   - Tables ready: `warehouses`, `stock_levels`, `fulfillments`, `fulfillment_splits`, `backorders`
+
+2. **Hybrid billing + proration** (PRD B7, Screens 9-10, 12-13)
+   - Proration is locked (#3): daily basis, `ROUND_HALF_UP` to 2dp, with `Decimal` — never
+     Python's built-in `round()`, which is banker's rounding
+   - Store every input beside the result in `proration_records`, or a billing dispute is
+     unanswerable
+   - **Close this gap first:** `quotation_lines` has a CHECK requiring a subscription line to
+     carry a plan, but the builder has no plan picker, so subscription products cannot yet be
+     added to a quote. See `_default_plan_id` in the quotations endpoint.
+   - Tables ready: `subscription_plans`, `subscriptions`, `billing_schedules`,
+     `proration_records`, `payments`
+
+3. **Customer portal negotiation** (PRD B8, Screen 11)
+   - Needs its own endpoints under `portal.*` permissions — NOT a filtered view of the internal
+     list. The portal shell exists and correctly refuses internal screens; only the negotiation
+     screen itself is a placeholder
+   - A counter-offer breaching a threshold must raise a NEW approval request, which is precisely
+     why decided approvals are terminal in the state machine
+   - `under_negotiation` and its transitions are already implemented and tested
+
+4. **Upsell panel wired to `upsell_rules`** (PRD B5)
+   - 7 rules are seeded. The builder currently shows promoted products as a stand-in; it needs
+     the real co-purchase lookup, the margin-delta figure and the `Dismiss` action
+
+### Then Phase 5 (Supporting)
+
+5. Deal health dashboard — **blocked**: anomaly thresholds still undefined (see Known Issues)
+6. Reporting with filters + PDF/XLS export — needs a Section 0.5 checkpoint for the export library
+7. Admin config screens for discount tiers and approval chains (Screen 18) — the data is already
+   configurable at runtime, only the UI is missing
+8. Product catalogue (Screens 16-17), manual warehouse override, nudges/escalations
+
+### Deferred deliberately
+
+- **Order-level discount UI** — the endpoint works and is tested; the builder has no button yet,
+  and it needs the overwrite warning required by Locked Business Rules #4
+- **HttpOnly cookie auth** — the refresh token currently lives in `localStorage`.
+  SECURITY_SPEC Section 7 prefers cookies and that remains the right end state; it needs CSRF
+  handling and a same-site story the split localhost origins do not currently allow
+- **Restricting public signup** — signup grants an empty internal workspace to anyone. Acceptable
+  for a hackathon, wrong for production; belongs in the "what we'd build next" deliverable
+- Bonus scope (multi-currency, multi-company) — untouched, correctly
 
 ## Do Not Change / Do Not Break
 - **Blended risk score formula — now locked.** See Locked Business Rules #1. Do not let a

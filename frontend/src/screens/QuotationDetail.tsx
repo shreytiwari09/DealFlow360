@@ -9,7 +9,7 @@
  * calculated client-side — FRONTEND.md Screen 18's explicit dependency.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import type { Product, Quotation, RiskPreview } from "../lib/api";
@@ -44,6 +44,19 @@ export default function QuotationDetail() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
+  /*
+   * The draft is mirrored into a ref, and every save reads the ref rather
+   * than the `draft` state variable.
+   *
+   * This is not belt-and-braces. An onBlur handler closes over the values
+   * from the render it was created in, so typing a discount and immediately
+   * blurring can fire a handler whose `draft` and `dirty` are one render
+   * behind - and the edit is silently dropped. A ref always holds the latest
+   * value regardless of render timing.
+   */
+  const draftRef = useRef<DraftLine[]>([]);
+  const debounceRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -54,14 +67,14 @@ export default function QuotationDetail() {
       ]);
       setQuotation(q);
       setProducts(p);
-      setDraft(
-        q.lines.map((line) => ({
-          product_id: line.product_id,
-          quantity: line.quantity,
-          discount_percent: line.discount_percent,
-          added_from_upsell: line.added_from_upsell,
-        })),
-      );
+      const lines = q.lines.map((line) => ({
+        product_id: line.product_id,
+        quantity: line.quantity,
+        discount_percent: line.discount_percent,
+        added_from_upsell: line.added_from_upsell,
+      }));
+      setDraft(lines);
+      draftRef.current = lines;
       setRisk(await api.get<RiskPreview>(`/quotations/${id}/risk`));
       setDirty(false);
     } catch (err) {
@@ -106,23 +119,59 @@ export default function QuotationDetail() {
     [quotation],
   );
 
+  /** Save whatever the ref currently holds. Immune to render timing. */
+  const flush = useCallback(() => {
+    if (debounceRef.current !== null) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    void save(draftRef.current);
+  }, [save]);
+
+  // Cancel a pending debounce if the screen goes away mid-edit.
+  useEffect(
+    () => () => {
+      if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
+    },
+    [],
+  );
+
   function addProduct(productId: number, fromUpsell = false) {
     const next = [
-      ...draft,
+      ...draftRef.current,
       { product_id: productId, quantity: "1", discount_percent: "0", added_from_upsell: fromUpsell },
     ];
     setDraft(next);
+    draftRef.current = next;
     void save(next);
   }
 
+  /**
+   * Edit a line and schedule a save.
+   *
+   * The debounce is what makes the risk score genuinely live: the rep types a
+   * discount and the score, margin and OVER LIMIT badge update a moment later
+   * without needing to click anything. Blur flushes immediately.
+   */
   function updateLine(index: number, patch: Partial<DraftLine>) {
-    setDraft((current) => current.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+    const next = draftRef.current.map((line, i) =>
+      i === index ? { ...line, ...patch } : line,
+    );
+    draftRef.current = next;
+    setDraft(next);
     setDirty(true);
+
+    if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
+      void save(draftRef.current);
+    }, 600);
   }
 
   function removeLine(index: number) {
-    const next = draft.filter((_, i) => i !== index);
+    const next = draftRef.current.filter((_, i) => i !== index);
     setDraft(next);
+    draftRef.current = next;
     void save(next);
   }
 
@@ -171,7 +220,7 @@ export default function QuotationDetail() {
                 <button
                   className="btn"
                   disabled={saving || !dirty}
-                  onClick={() => void save(draft)}
+                  onClick={flush}
                 >
                   {saving ? "Saving…" : "Save Draft"}
                 </button>
@@ -273,7 +322,7 @@ export default function QuotationDetail() {
                             min="1"
                             value={draft[index]?.quantity ?? line.quantity}
                             onChange={(e) => updateLine(index, { quantity: e.target.value })}
-                            onBlur={() => dirty && void save(draft)}
+                            onBlur={flush}
                           />
                         ) : (
                           Number(line.quantity)
@@ -295,7 +344,7 @@ export default function QuotationDetail() {
                             onChange={(e) =>
                               updateLine(index, { discount_percent: e.target.value })
                             }
-                            onBlur={() => dirty && void save(draft)}
+                            onBlur={flush}
                           />
                         ) : (
                           percent(line.discount_percent)

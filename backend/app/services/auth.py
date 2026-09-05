@@ -37,12 +37,21 @@ def _hash_jti(jti: str) -> str:
     return hashlib.sha256(jti.encode()).hexdigest()
 
 
+# Every user load needs the role (for permissions) AND the customer link.
+#
+# `User.customer` looks harmless because it is None for internal users, and a
+# many-to-one with a NULL foreign key resolves to None without emitting SQL.
+# For a PORTAL user it is populated, so touching it lazy-loads inside async and
+# raises MissingGreenlet - meaning /auth/me 500s for customers only. Eager
+# loading both here is what keeps that from being a role-specific landmine.
+_USER_LOADS = (
+    selectinload(User.role).selectinload(Role.permissions),
+    selectinload(User.customer),
+)
+
+
 async def _load_user(session: AsyncSession, user_id: int) -> User | None:
-    result = await session.execute(
-        select(User)
-        .where(User.id == user_id)
-        .options(selectinload(User.role).selectinload(Role.permissions))
-    )
+    result = await session.execute(select(User).where(User.id == user_id).options(*_USER_LOADS))
     return result.scalar_one_or_none()
 
 
@@ -72,9 +81,7 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> tupl
     """
     normalised = email.strip().lower()
     result = await session.execute(
-        select(User)
-        .where(User.email == normalised)
-        .options(selectinload(User.role).selectinload(Role.permissions))
+        select(User).where(User.email == normalised).options(*_USER_LOADS)
     )
     user = result.scalar_one_or_none()
 

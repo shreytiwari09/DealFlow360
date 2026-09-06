@@ -48,6 +48,7 @@ from app.services.quotation import (
     quantize_percent,
     recalculate,
 )
+from app.services.risk import LineRiskInput, assess_lines
 from app.services.state_machine import InvalidStateTransition, assert_transition
 from app.services.upsell import (
     UpsellCandidate,
@@ -424,6 +425,24 @@ async def apply_order_discount(
         raise _NOT_FOUND
     await assert_can_edit_quotation(request, session, user, quotation)
 
+    # Real bug, found by an in-depth pass over this file and confirmed live:
+    # `assert_can_edit_quotation` checks permission and ownership only, never
+    # status (see `deps.py::can_edit_quotation`'s own docstring - "Only the
+    # owning rep may edit, and only their own", nothing about WHEN). Unlike
+    # `replace_lines` just above, this endpoint had no equivalent status
+    # gate, so the owning rep could apply a fresh discount to a quotation
+    # that had already been CONFIRMED - after `generate_billing_for_quotation`
+    # had already written a `BillingSchedule` row for the ORIGINAL total.
+    # Reproduced live: confirming a ₹29,500 order, then applying a 40% order
+    # discount to it, left the quotation reporting ₹17,700 while the invoice
+    # already on file still said ₹29,500 - a real, silent money mismatch
+    # between what the quotation claims and what was actually billed.
+    if quotation.status not in (QuotationStatus.DRAFT, QuotationStatus.REJECTED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a draft quotation can be edited.",
+        )
+
     order_discount = quantize_percent(payload.discount_percent)
     for line in quotation.lines:
         line.discount_percent = order_discount
@@ -447,15 +466,51 @@ async def apply_order_discount(
 async def get_risk(
     request: Request, quotation_id: int, session: SessionDep, user: CurrentUser
 ) -> RiskPreviewResponse:
-    """The live risk indicator, and Screen 6's "why flagged" breakdown."""
+    """The live risk indicator, and Screen 6's "why flagged" breakdown.
+
+    Related bug, found alongside the order-discount one above: this is a GET
+    endpoint, but it called `recalculate()` (which WRITES the quotation's
+    derived fields and flushes) unconditionally, on every view, regardless
+    of status. `recalculate()`'s own docstring on `allowed_discount_percent`
+    says the per-line ceiling is "snapshotted onto the row so a later change
+    to policy cannot rewrite what was approved" - but simply opening this
+    tab on an already-decided quotation silently re-derived and persisted
+    that same "snapshot" from WHATEVER the discount ceilings happen to be
+    today, contradicting the very invariant that comment describes. An Admin
+    editing a discount tier months after a deal closed could retroactively
+    change a closed quotation's own record of why it was flagged, just by
+    someone opening its risk tab.
+
+    Fixed the same way as the order-discount bug: once a quotation has left
+    draft/rejected, its risk numbers are a historical record, not a live
+    computation - build the preview from the lines' own already-stored
+    values (a pure, read-only call into `risk.py`) instead of recomputing
+    and persisting. Still fully live and recalculated for an editable quote,
+    where that behavior is exactly what the builder screen needs.
+    """
     quotation = await load_quotation(session, quotation_id)
     if quotation is None:
         raise _NOT_FOUND
     await assert_can_view_quotation(request, session, user, quotation)
 
-    assessment = await recalculate(session, quotation)
+    editable = quotation.status in (QuotationStatus.DRAFT, QuotationStatus.REJECTED)
+    if editable:
+        assessment = await recalculate(session, quotation)
+        await session.commit()
+    else:
+        assessment = assess_lines(
+            [
+                LineRiskInput(
+                    line_number=line.line_number,
+                    quantity=line.quantity,
+                    unit_list_price=line.unit_list_price,
+                    discount_percent=line.discount_percent,
+                    allowed_discount_percent=line.allowed_discount_percent,
+                )
+                for line in quotation.lines
+            ]
+        )
     steps = await raise_approval_request(session, quotation, assessment, dry_run=True)
-    await session.commit()
 
     return RiskPreviewResponse(
         blended_risk_score=assessment.blended_score,

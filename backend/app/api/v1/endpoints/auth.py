@@ -9,6 +9,14 @@ Public signup exists (`POST /signup`) per PROJECT_CONTEXT.md Locked Business
 Rules #5 — this module's own docstring used to claim the opposite, which was
 simply wrong: the rule was locked and written up early in the build, but the
 endpoint implementing it was never actually added until now.
+
+Cookie migration (SECURITY_SPEC.md Section 7): the refresh token is issued
+and read ONLY as an HttpOnly cookie now (`core/cookies.py`), never in a JSON
+body a script could read. `POST /refresh` and `POST /logout` therefore take
+no request body at all — the cookie IS the credential — and both require a
+matching `X-CSRF-Token` header (`core/csrf.py`) before touching anything,
+since a cookie (unlike the `Authorization` header every other endpoint uses)
+is sent by the browser automatically, which is exactly what CSRF exploits.
 """
 
 from __future__ import annotations
@@ -16,7 +24,16 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.api.deps import CurrentUser, SessionDep, user_permissions
+from app.core.config import settings
+from app.core.cookies import (
+    clear_auth_cookies,
+    get_presented_csrf_token,
+    get_refresh_cookie,
+    set_auth_cookies,
+)
+from app.core.csrf import csrf_token_valid
 from app.core.rate_limit import limiter
+from app.core.tokens import TokenError, decode_token
 from app.models.audit import AuditAction
 from app.schemas.api import (
     AcceptInvitationRequest,
@@ -24,7 +41,6 @@ from app.schemas.api import (
     CurrentUserResponse,
     InvitationPreviewResponse,
     LoginRequest,
-    RefreshRequest,
     SignupRequest,
     TokenResponse,
 )
@@ -33,6 +49,7 @@ from app.services.auth import (
     AuthError,
     PasswordChangeError,
     SignupError,
+    TokenPair,
     authenticate,
     revoke_refresh_token,
     rotate_refresh_token,
@@ -49,6 +66,20 @@ _INVALID_CREDENTIALS = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
     detail="Incorrect email or password.",
 )
+_INVALID_REQUEST = HTTPException(
+    status_code=status.HTTP_403_FORBIDDEN,
+    detail="Invalid request.",
+)
+
+
+def _issue_response(response: Response, tokens: TokenPair) -> TokenResponse:
+    """Set the refresh+CSRF cookies from a freshly issued pair and return the
+    body every login-shaped endpoint sends back. One place for this so the
+    four callers (signup, login, refresh, accept-invite) cannot drift into
+    setting the cookies slightly differently from each other."""
+    jti = decode_token(tokens.refresh_token, expect="refresh").jti
+    set_auth_cookies(response, refresh_token=tokens.refresh_token, jti=jti)
+    return TokenResponse(access_token=tokens.access_token)
 
 
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -67,7 +98,21 @@ async def signup(
     Tighter rate limit than login (5/minute vs 10/minute): account creation
     is the more expensive operation (an Argon2id hash plus a DB write, not
     just a hash comparison) and a more attractive target for abuse.
+
+    Gated by `settings.ALLOW_PUBLIC_SIGNUP` (default on, matching this
+    project's demo/dev behavior unchanged) - open self-signup handing out an
+    internal workspace to anyone is right for a hackathon and wrong left on
+    in production; PROJECT_CONTEXT.md's "Deferred deliberately" flagged this
+    as a real gap, and this flag is the fix. Checked before the rate limiter
+    would even matter, and returns the same 403 shape `require_permission`
+    uses elsewhere, not a 404 - there is nothing to hide about whether this
+    endpoint exists, only whether it currently accepts new accounts.
     """
+    if not settings.ALLOW_PUBLIC_SIGNUP:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Public registration is currently disabled. Ask an Admin for an invite.",
+        )
     try:
         user, tokens = await signup_user(
             session, email=payload.email, password=payload.password, full_name=payload.full_name
@@ -86,7 +131,7 @@ async def signup(
         request=request,
     )
     await session.commit()
-    return TokenResponse(**tokens.__dict__)
+    return _issue_response(response, tokens)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -125,35 +170,61 @@ async def login(
         request=request,
     )
     await session.commit()
-    return TokenResponse(**tokens.__dict__)
+    return _issue_response(response, tokens)
 
 
 @router.post("/refresh", response_model=TokenResponse)
 @limiter.limit("30/minute")
-async def refresh(
-    request: Request,
-    response: Response,
-    payload: RefreshRequest,
-    session: SessionDep,
-) -> TokenResponse:
+async def refresh(request: Request, response: Response, session: SessionDep) -> TokenResponse:
+    """No request body: the refresh token comes ONLY from the HttpOnly
+    cookie now. A missing cookie, a garbled one, and a CSRF-header mismatch
+    all collapse to the same generic 401/403 shape as any other auth
+    failure — none of the three should tell a caller which one happened.
+    """
+    raw_refresh = get_refresh_cookie(request)
+    if raw_refresh is None:
+        raise _INVALID_CREDENTIALS
+
     try:
-        _, tokens = await rotate_refresh_token(session, payload.refresh_token)
+        claims = decode_token(raw_refresh, expect="refresh")
+    except TokenError:
+        clear_auth_cookies(response)
+        raise _INVALID_CREDENTIALS from None
+
+    if not csrf_token_valid(jti=claims.jti, presented=get_presented_csrf_token(request)):
+        raise _INVALID_REQUEST
+
+    try:
+        _, tokens = await rotate_refresh_token(session, raw_refresh)
     except AuthError:
         await session.commit()  # persist any family revocation from reuse detection
+        clear_auth_cookies(response)
         raise _INVALID_CREDENTIALS from None
 
     await session.commit()
-    return TokenResponse(**tokens.__dict__)
+    return _issue_response(response, tokens)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(request: Request, payload: RefreshRequest, session: SessionDep) -> None:
+async def logout(request: Request, response: Response, session: SessionDep) -> None:
     """Invalidates server-side refresh state, per SECURITY_SPEC.md Section 3.
 
-    Unauthenticated on purpose: a client holding a token it wants to discard
+    Unauthenticated on purpose: a client holding a cookie it wants to discard
     should always be able to, even if the access token has already expired.
+    The cookies are cleared regardless of whether server-side revocation
+    below actually runs — a missing/garbled cookie or a failed CSRF check
+    must never leave the browser still holding what it asked to throw away.
     """
-    await revoke_refresh_token(session, payload.refresh_token)
+    raw_refresh = get_refresh_cookie(request)
+    if raw_refresh is not None:
+        try:
+            claims = decode_token(raw_refresh, expect="refresh")
+            if csrf_token_valid(jti=claims.jti, presented=get_presented_csrf_token(request)):
+                await revoke_refresh_token(session, raw_refresh)
+        except TokenError:
+            pass
+
+    clear_auth_cookies(response)
     await audit.record(session, action=AuditAction.LOGOUT, resource="auth", request=request)
     await session.commit()
 
@@ -278,4 +349,4 @@ async def accept_invite(
         request=request,
     )
     await session.commit()
-    return TokenResponse(**tokens.__dict__)
+    return _issue_response(response, tokens)

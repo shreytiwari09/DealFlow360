@@ -24,14 +24,16 @@ from app.models.catalog import Product
 from app.models.customer import Customer
 from app.models.enums import ItemType, QuotationStatus, RoleCode
 from app.models.quotation import Quotation, QuotationLine
-from app.models.rbac import User
+from app.models.rbac import Role, User
 from app.models.upsell import UpsellRule
 from app.schemas.api import (
+    AssignableUserResponse,
     CreateQuotationRequest,
     OrderDiscountRequest,
     QuotationLineResponse,
     QuotationResponse,
     QuotationSummaryResponse,
+    ReassignQuotationRequest,
     ReplaceLinesRequest,
     RiskLineBreakdown,
     RiskPreviewResponse,
@@ -65,6 +67,7 @@ CanReadOwn = Annotated[User, Depends(require_permission("deal.read_own"))]
 CanCreate = Annotated[User, Depends(require_permission("deal.create"))]
 # Admin-only in practice: nobody else is seeded with it (Locked Business #8).
 CanConfirmOverride = Annotated[User, Depends(require_permission("deal.confirm_override"))]
+CanAssign = Annotated[User, Depends(require_permission("deal.assign"))]
 
 
 def _line_response(line: QuotationLine) -> QuotationLineResponse:
@@ -97,6 +100,7 @@ def _detail(quotation: Quotation, user: User) -> QuotationResponse:
         customer_id=quotation.customer_id,
         customer_name=quotation.customer.name,
         customer_tier=quotation.customer.tier,
+        owner_id=quotation.owner_id,
         owner_name=quotation.owner.full_name,
         status=quotation.status,
         subtotal_amount=quotation.subtotal_amount,
@@ -150,6 +154,7 @@ async def list_quotations(
             quote_number=q.quote_number,
             customer_id=q.customer_id,
             customer_name=q.customer.name,
+            owner_id=q.owner_id,
             owner_name=q.owner.full_name,
             status=q.status,
             total_amount=q.total_amount,
@@ -202,6 +207,37 @@ async def create_quotation(
     return _detail(loaded, user)
 
 
+@router.get("/assignable-users", response_model=list[AssignableUserResponse])
+async def list_assignable_users(
+    session: SessionDep, user: CanAssign
+) -> list[AssignableUserResponse]:
+    """The reassign picker's options: every active internal (non-customer)
+    user — deliberately not `GET /admin/users` (that needs `user.manage`,
+    a different, broader permission `deal.assign` does not imply).
+
+    Registered ABOVE `GET /{quotation_id}` on purpose: FastAPI matches routes
+    in registration order, and `quotation_id: int`'s own type validation
+    would otherwise 422 on the literal string "assignable-users" before this
+    route ever got a chance to match.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(User)
+                .join(Role, User.role_id == Role.id)
+                .where(User.is_active.is_(True), Role.code != RoleCode.CUSTOMER)
+                .options(selectinload(User.role))
+                .order_by(User.full_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        AssignableUserResponse(id=u.id, full_name=u.full_name, role_name=u.role.name) for u in rows
+    ]
+
+
 @router.get("/{quotation_id}", response_model=QuotationResponse)
 async def get_quotation(
     request: Request, quotation_id: int, session: SessionDep, user: CurrentUser
@@ -212,6 +248,60 @@ async def get_quotation(
     # Ownership, not just permission — this is the IDOR check.
     await assert_can_view_quotation(request, session, user, quotation)
     return _detail(quotation, user)
+
+
+@router.patch("/{quotation_id}/assign", response_model=QuotationResponse)
+async def reassign_quotation(
+    request: Request,
+    quotation_id: int,
+    payload: ReassignQuotationRequest,
+    session: SessionDep,
+    user: CanAssign,
+) -> QuotationResponse:
+    """PRD Section 3: Sales Manager "Reassigns a quotation to another rep."
+
+    Not ownership-gated like editing a quotation's lines is — `deal.assign`
+    is the whole authorization here, the same flat-permission shape as
+    `config.manage`/`user.manage` elsewhere in this app: whoever holds it may
+    reassign any quotation, not only ones on their own team (no per-team
+    scoping exists anywhere else in this codebase's permission model either,
+    so inventing one just for this action would be inconsistent, not safer).
+    """
+    quotation = await load_quotation(session, quotation_id)
+    if quotation is None:
+        raise _NOT_FOUND
+
+    new_owner = (
+        await session.execute(
+            select(User).where(User.id == payload.new_owner_id).options(selectinload(User.role))
+        )
+    ).scalar_one_or_none()
+    if new_owner is None or not new_owner.is_active or new_owner.role.code == RoleCode.CUSTOMER:
+        raise HTTPException(status_code=422, detail="Unknown or ineligible user.")
+
+    old_owner_name = quotation.owner.full_name
+    # Assigning the RELATIONSHIP, not just `owner_id`: this quotation is
+    # already in the session's identity map with `owner` eagerly loaded from
+    # the fetch above, and setting only the FK scalar leaves that relationship
+    # attribute stale (still pointing at the old owner object) for the rest
+    # of this request - `_detail()` below would report the wrong name even
+    # though the database write was correct. Setting `.owner` keeps both the
+    # FK and the in-memory relationship consistent in one step.
+    quotation.owner = new_owner
+
+    await audit.record(
+        session,
+        action=AuditAction.QUOTATION_REASSIGNED,
+        user_id=user.id,
+        resource="quotation",
+        resource_id=quotation.id,
+        reason=f"reassigned from {old_owner_name} to {new_owner.full_name}",
+        request=request,
+    )
+    await session.commit()
+
+    loaded = await load_quotation(session, quotation.id)
+    return _detail(loaded, user)
 
 
 @router.put("/{quotation_id}/lines", response_model=QuotationResponse)

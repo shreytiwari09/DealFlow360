@@ -8,7 +8,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { api, getRefreshToken, setTokens } from "./api";
+import { api, logout as apiLogout, setAccessToken } from "./api";
 import type { CurrentUser, TokenResponse } from "./api";
 
 interface AuthState {
@@ -27,22 +27,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // On first load, try to resume a session from the stored refresh token.
+  // On first load, try to resume a session from the HttpOnly refresh cookie.
+  // There is nothing to check for existence first anymore (no stored token
+  // to read) — `api.get` triggers its own refresh-and-replay on a 401, which
+  // either succeeds (the cookie was valid) or fails generically (there was
+  // none, or it expired) exactly like any other unauthenticated request. A
+  // brand-new tab or a fresh page load looks identical to this code now,
+  // which is the whole point: the browser's cookie jar is shared, so there
+  // is no separate "does THIS tab know about the session" question left to
+  // answer the way sessionStorage/localStorage used to require.
   useEffect(() => {
     let cancelled = false;
     async function resume() {
-      if (!getRefreshToken()) {
-        setLoading(false);
-        return;
-      }
       try {
-        // api.get triggers the refresh-and-replay path when the in-memory
-        // access token is absent, so this both restores the session and
-        // rotates the refresh token.
         const me = await api.get<CurrentUser>("/auth/me");
         if (!cancelled) setUser(me);
       } catch {
-        setTokens(null, null);
+        setAccessToken(null);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -55,7 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     const tokens = await api.post<TokenResponse>("/auth/login", { email, password });
-    setTokens(tokens.access_token, tokens.refresh_token);
+    setAccessToken(tokens.access_token);
     setUser(await api.get<CurrentUser>("/auth/me"));
   }, []);
 
@@ -70,7 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password,
       full_name: fullName,
     });
-    setTokens(tokens.access_token, tokens.refresh_token);
+    setAccessToken(tokens.access_token);
     setUser(await api.get<CurrentUser>("/auth/me"));
   }, []);
 
@@ -84,18 +85,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const tokens = await api.post<TokenResponse>(`/auth/invitations/${token}/accept`, {
       password,
     });
-    setTokens(tokens.access_token, tokens.refresh_token);
+    setAccessToken(tokens.access_token);
     setUser(await api.get<CurrentUser>("/auth/me"));
   }, []);
 
   const signOut = useCallback(async () => {
-    const refresh = getRefreshToken();
-    try {
-      if (refresh) await api.post("/auth/logout", { refresh_token: refresh });
-    } catch {
-      /* logging out must succeed locally even if the server call does not */
-    }
-    setTokens(null, null);
+    await apiLogout();
     setUser(null);
   }, []);
 

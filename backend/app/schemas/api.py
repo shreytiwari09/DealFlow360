@@ -50,13 +50,13 @@ class SignupRequest(BaseModel):
     full_name: str = Field(min_length=1, max_length=160)
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-
 class TokenResponse(BaseModel):
+    """The refresh token is deliberately NOT a field here anymore - it lives
+    only in the HttpOnly `refresh_token` cookie (`core/cookies.py`), set
+    alongside this response, never in a body JavaScript can read
+    (SECURITY_SPEC.md Section 7)."""
+
     access_token: str
-    refresh_token: str
     # S105 false positive: this is the OAuth2 token_type field, whose value
     # is literally the word "bearer", not a secret.
     token_type: str = "bearer"  # noqa: S105
@@ -132,6 +132,7 @@ class QuotationSummaryResponse(BaseModel):
     quote_number: str
     customer_id: int
     customer_name: str
+    owner_id: int
     owner_name: str
     status: str
     total_amount: Decimal
@@ -162,6 +163,21 @@ class QuotationResponse(QuotationSummaryResponse):
 class CreateQuotationRequest(BaseModel):
     customer_id: int
     valid_until: date | None = None
+
+
+class ReassignQuotationRequest(BaseModel):
+    new_owner_id: int
+
+
+class AssignableUserResponse(BaseModel):
+    """The reassign picker's options — deliberately thinner than
+    `AdminUserResponse` (no email, no invitation status): this is a name
+    picker, not a user-management view, and is reachable by `deal.assign`
+    alone, a permission that does not imply `user.manage`."""
+
+    id: int
+    full_name: str
+    role_name: str
 
 
 class LineRequest(BaseModel):
@@ -769,14 +785,19 @@ class InviteUserRequest(BaseModel):
     customer_id: int | None = None
 
 
+class ChangeUserRoleRequest(BaseModel):
+    role_id: int
+
+
 class InviteUserResponse(BaseModel):
     user: AdminUserResponse
-    # No email infrastructure exists in this project (PROJECT_CONTEXT.md) —
-    # the activation link is handed straight back to the Admin to copy and
-    # send however they already reach this person, the same "copy this link"
-    # shape as a Google Doc share link or a Slack invite.
+    # The activation link is always returned too, even now that a real email
+    # is sent (`services/mailer.py`) — a fallback the Admin can copy and send
+    # by hand if `email_sent` comes back False (an SMTP outage must never be
+    # able to silently make an invite un-actionable).
     invite_url: str
     expires_at: datetime
+    email_sent: bool
 
 
 class InvitationPreviewResponse(BaseModel):

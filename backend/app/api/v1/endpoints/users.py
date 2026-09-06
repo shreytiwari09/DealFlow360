@@ -25,10 +25,17 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import SessionDep, require_permission
 from app.core.config import settings
 from app.models.audit import AuditAction
-from app.models.rbac import User
-from app.schemas.api import AdminUserResponse, InviteUserRequest, InviteUserResponse
+from app.models.enums import RoleCode
+from app.models.rbac import Role, User
+from app.schemas.api import (
+    AdminUserResponse,
+    ChangeUserRoleRequest,
+    InviteUserRequest,
+    InviteUserResponse,
+)
 from app.services import audit
 from app.services.invitation import InvitationError, invite_user
+from app.services.mailer import MailError, send_invitation_email
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -72,10 +79,10 @@ async def list_users(session: SessionDep, user: CanManageUsers) -> list[AdminUse
 async def invite(
     request: Request, payload: InviteUserRequest, session: SessionDep, user: CanManageUsers
 ) -> InviteUserResponse:
-    """Create the (inactive) account and return its one-time activation
-    link. The link is never emailed by this project (no SMTP/email provider
-    exists — see PROJECT_CONTEXT.md); the Admin copies it and sends it
-    however they already reach the invitee, same as sharing a document link.
+    """Create the (inactive) account, email its one-time activation link, and
+    return that same link in the response regardless — an SMTP outage must
+    never be able to silently make an invitation un-actionable, so the
+    Admin's copy-link fallback always works even when `email_sent` is False.
     """
     try:
         invited, raw_token, expires_at = await invite_user(
@@ -101,8 +108,94 @@ async def invite(
     )
     await session.commit()
 
+    invite_url = f"{settings.FRONTEND_BASE_URL}/activate/{raw_token}"
+
+    # Sent AFTER commit: the invitation must exist and be usable via the
+    # copy-link fallback regardless of whether the send below succeeds -
+    # never let an SMTP failure roll back an otherwise-successful invite.
+    email_sent = True
+    try:
+        await send_invitation_email(
+            to=invited.email,
+            full_name=invited.full_name,
+            invite_url=invite_url,
+            role_name=invited.role.name,
+        )
+    except MailError:
+        email_sent = False
+
     return InviteUserResponse(
         user=_user_response(invited),
-        invite_url=f"{settings.FRONTEND_BASE_URL}/activate/{raw_token}",
+        invite_url=invite_url,
         expires_at=expires_at,
+        email_sent=email_sent,
     )
+
+
+@router.patch("/users/{user_id}/role", response_model=AdminUserResponse)
+async def change_role(
+    request: Request,
+    user_id: int,
+    payload: ChangeUserRoleRequest,
+    session: SessionDep,
+    user: CanManageUsers,
+) -> AdminUserResponse:
+    """Correct an already-provisioned user's role — promoting, demoting, or
+    fixing a mis-provisioned one. This is deliberately NOT how a portal
+    account gets its role: both the current and the target role must be
+    internal (non-`customer`), since a customer role is meaningless without
+    the `customer_id` link `POST /admin/users/invite` sets up, and this
+    endpoint has no way to supply or remove that link. Provisioning a portal
+    account, or a fresh internal one, goes through the invite flow above;
+    this endpoint only ever changes which INTERNAL role an existing internal
+    account holds.
+    """
+    target = (
+        await session.execute(
+            select(User).where(User.id == user_id).options(selectinload(User.role))
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    if target.id == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="You cannot change your own role."
+        )
+    if target.role.code == RoleCode.CUSTOMER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Portal accounts' roles cannot be changed here.",
+        )
+
+    new_role = await session.get(Role, payload.role_id)
+    if new_role is None:
+        raise HTTPException(status_code=422, detail="Unknown role.")
+    if new_role.code == RoleCode.CUSTOMER:
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot change an internal account into a portal account here.",
+        )
+
+    old_role_name = target.role.name
+    target.role = new_role
+
+    await audit.record(
+        session,
+        action=AuditAction.ROLE_CHANGED,
+        user_id=user.id,
+        resource="user",
+        resource_id=target.id,
+        reason=f"changed {target.email} from {old_role_name} to {new_role.name}",
+        request=request,
+    )
+    await session.commit()
+
+    loaded = (
+        await session.execute(
+            select(User)
+            .where(User.id == target.id)
+            .options(selectinload(User.role), selectinload(User.customer))
+        )
+    ).scalar_one()
+    return _user_response(loaded)

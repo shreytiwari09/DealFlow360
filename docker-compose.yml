@@ -9,6 +9,25 @@
 # work transparently on Windows/Mac.
 
 services:
+  # Local dev mail catcher (PLAN.md Section 0.5 checkpoint: adopted over a
+  # real SMTP provider because this project has no real account/credentials
+  # to send from, and a hackathon build should not depend on one existing.
+  # Mailpit speaks real SMTP - the backend's mailer code is the same code a
+  # production deployment would use, just pointed at a different host - and
+  # its web UI (http://localhost:8025) is where every "sent" email actually
+  # lands, so the invite-email flow is genuinely exercised, not stubbed out.
+  mailpit:
+    image: axllent/mailpit:v1.20
+    ports:
+      - "127.0.0.1:8025:8025" # web UI
+      - "127.0.0.1:1025:1025" # SMTP
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/api/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   backend:
     build: ./backend
     env_file:
@@ -18,6 +37,9 @@ services:
     volumes:
       # Bind mount for --reload during development.
       - ./backend:/app
+    depends_on:
+      mailpit:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health').status==200 else 1)\""]
       interval: 10s

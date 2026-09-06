@@ -1808,3 +1808,185 @@ backend actually has, closing out the last two disabled placeholders from Phase 
 ### Next Recommended Step
 Nothing is blocking. If continuing: `deal.assign` (quotation reassignment) is a seeded
 permission with no implementation behind it — noted this round, not built.
+
+## 2026-09-06 — Close Five Deferred Gaps: Cookies+CSRF, deal.assign, Role Change, Signup Gate, Real Email
+
+### Goal
+The user asked to remove the demo script (it had gone stale twice) and to implement five items
+straight off the "Deferred deliberately" list from the previous entries: HttpOnly cookie auth
+(with CSRF), `deal.assign` (quotation reassignment), a role-change endpoint for an existing
+user, gating public signup for production, and real email delivery for invite links.
+
+### Implemented
+
+**0. Removed `DEMO.md`.** It had gone stale twice in two sessions (claiming built features were
+"not started"). Cleaned up every reference in `README.md`/`PROJECT_CONTEXT.md` rather than
+leaving dangling links to a file that no longer exists.
+
+**1. HttpOnly cookie auth + CSRF (SECURITY_SPEC.md Section 7).** The refresh token now lives
+ONLY in an HttpOnly `refresh_token` cookie (`app/core/cookies.py`), scoped to `/api/v1/auth` so
+the browser only ever sends it to the handful of routes that need it. It is never in a JSON
+response body or anywhere JavaScript can read it. `TokenResponse` dropped its `refresh_token`
+field entirely; `POST /auth/refresh` and `POST /auth/logout` take no request body at all now —
+the cookie is the credential.
+
+CSRF (`app/core/csrf.py`) is a **signed** double-submit token, not a naive one:
+`csrf_token = HMAC(JWT_SECRET_KEY, refresh-token jti)`, set as a second, JS-readable cookie
+alongside the HttpOnly one. The frontend echoes it back as an `X-CSRF-Token` header on the two
+cookie-driven routes; the server recomputes the HMAC from the presented refresh token's own jti
+and compares with `hmac.compare_digest`. A naive double-submit (two unrelated random values,
+compared to each other) is defeated by ANY bug letting an attacker plant their own matching
+cookie pair (a related subdomain, an unrelated XSS) — tying the CSRF value to the refresh
+token's own jti means forging one requires already knowing that jti, which requires already
+having the HttpOnly cookie, at which point CSRF is no longer the weak point anyway.
+
+This also retired the ENTIRE sessionStorage/localStorage bootstrap-fallback mechanism from
+2026-09-05/06 (`getRefreshToken`, `setTokens`, `BOOTSTRAPPED_KEY` — all deleted from
+`lib/api.ts`). That machinery existed to approximate, by hand, a property cookies already have
+for free: a cookie is shared correctly across every tab of the same browser automatically, so
+"which tab's copy is the real one" is no longer a question the frontend has to answer at all.
+`resume()` in `auth.tsx` is now just "try `/auth/me`, let its built-in 401→refresh→retry handle
+whether a session exists" — the exact same code path for a page reload, a brand-new tab, and a
+deep link, which is precisely the bug class (deep-link-in-a-new-tab, cross-tab collision) those
+two prior sessions spent real effort patching around instead of eliminating.
+
+**2. `deal.assign`.** `GET /quotations/assignable-users` (every active internal, non-customer
+user) + `PATCH /quotations/{id}/assign` (`{new_owner_id}`), gated by `deal.assign` alone — a
+flat permission like `config.manage`/`user.manage` elsewhere in this app, not scoped to "your
+own team" (no other permission in this codebase's model is team-scoped either, so inventing one
+just for this action would be inconsistent, not safer). Frontend: an "Owned by X · Reassign"
+control on `QuotationDetail.tsx`.
+
+**3. `PATCH /admin/users/{id}/role`.** Narrower than the role originally sketched for it back
+when it was tied to promoting a self-registered Sales Rep (invite now covers that case, per the
+2026-09-06 part 2 entry) — this one only moves a user between INTERNAL roles. Both the current
+and target role must not be `customer` (a portal account's role is meaningless without the
+`customer_id` link only the invite flow sets up), and an Admin cannot change their own role
+(avoids an accidental self-demotion/lockout). Frontend: an inline role `<select>` + Save per row
+on `AdminUsersList.tsx`, hidden for portal rows and the viewer's own row.
+
+**4. `ALLOW_PUBLIC_SIGNUP`.** A single boolean (default `true`, so nothing in the existing
+demo/dev flow changes unless explicitly set). `POST /auth/signup` 403s with a clear message when
+it's `false`. Deliberately a standalone flag rather than tied to `ENVIRONMENT == "production"`:
+the two concerns are independent (a non-prod environment might want signup off for a specific
+test; production might legitimately want it on for a limited launch).
+
+**5. Real email delivery.** Asked the user which transport: their own real SMTP account, or a
+local dev mail-catcher. Chose the catcher — **Mailpit**, added to `docker-compose.yml` (PLAN.md
+Section 0.5: adopted over a real provider because this project has no real account to send
+from, and standing one up is out of proportion for a hackathon). `services/mailer.py` uses only
+the Python standard library (`smtplib`/`email`) — no new dependency needed for plain SMTP, the
+only thing this project's one call site requires. `POST /admin/users/invite` now actually sends
+the activation email (viewable at `http://localhost:8025`), and STILL returns the raw link in
+the response (`InviteUserResponse.email_sent` says whether the send succeeded) — an SMTP outage
+must never be able to make an invitation un-actionable.
+
+### Files Changed
+- `backend/app/core/cookies.py`, `backend/app/core/csrf.py` (new)
+- `backend/app/api/v1/endpoints/auth.py` (cookie/CSRF rewrite of signup/login/refresh/logout/
+  accept-invite; `ALLOW_PUBLIC_SIGNUP` gate)
+- `backend/app/schemas/api.py` (`TokenResponse` drops `refresh_token`; `RefreshRequest` removed;
+  new: `ReassignQuotationRequest`, `AssignableUserResponse`, `ChangeUserRoleRequest`)
+- `backend/app/core/config.py` (`ALLOW_PUBLIC_SIGNUP`, `SMTP_*` settings)
+- `backend/app/main.py` (CORS `allow_headers` +`X-CSRF-Token`)
+- `backend/app/services/mailer.py` (new)
+- `backend/app/api/v1/endpoints/users.py` (`PATCH /users/{id}/role`; invite now emails)
+- `backend/app/api/v1/endpoints/quotations.py` (`GET /assignable-users`,
+  `PATCH /{id}/assign`; `owner_id` added to both quotation response schemas)
+- `backend/app/models/audit.py` (`QUOTATION_REASSIGNED`)
+- `docker-compose.yml` (`mailpit` service)
+- `.env`, `.env.example`
+- `frontend/src/lib/api.ts` (deleted the sessionStorage/localStorage machinery; cookie-based
+  refresh/logout; `patch()`; `setAccessToken`/`logout` exports)
+- `frontend/src/lib/auth.tsx` (simplified `resume()`; no more manual token plumbing)
+- `frontend/src/screens/QuotationDetail.tsx` (reassign control)
+- `frontend/src/screens/AdminUsersList.tsx` (inline role editor)
+- `DEMO.md` (removed); `README.md`, `PROJECT_CONTEXT.md` (references cleaned up)
+
+### Important Decisions
+- Decision: CSRF is a signed double-submit (HMAC of the refresh token's own jti), not a plain
+  double-submit (two independent random cookies).
+- Reason: a plain double-submit is defeated by any unrelated cookie-setting bug; tying the value
+  to the refresh token's own jti means forging it requires already having compromised the
+  HttpOnly cookie, which is a strictly harder bar.
+
+- Decision: Mailpit (a local dev mail-catcher), not a real SMTP provider, per the user's choice
+  when asked.
+- Reason: no real email account exists for this project to send from, and standing one up is out
+  of proportion for a hackathon build; `services/mailer.py` speaks real SMTP regardless, so
+  switching to a real provider later is a `.env` change, not a code change.
+
+- Decision: `PATCH /admin/users/{id}/role` refuses to touch a portal (`customer`) account's role
+  in either direction, and refuses a self-change.
+- Reason: a portal role is meaningless without the `customer_id` link only the invite flow can
+  set; a self-change risks an accidental lockout with no recovery path in this build.
+
+- Decision: `deal.assign` has no per-team scoping — anyone holding the permission may reassign
+  any quotation, not only ones on their own team.
+- Reason: consistency with every other permission in this app's RBAC model, none of which are
+  team-scoped for writes either; inventing team-scoping for just this one action would be an
+  inconsistency, not a safety improvement.
+
+### Validation
+- Backend: 230 pytest tests still pass unchanged — `test_auth.py` exercises `signup()`/
+  `authenticate()`/`rotate_refresh_token()` at the SERVICE layer directly, which the cookie
+  migration (an endpoint-layer change only) never touched.
+- `ruff check`/`ruff format` clean on every touched backend file. Frontend `tsc -b` and
+  `vite build` both clean.
+- Live-verified the full cookie/CSRF contract against the running stack with a real
+  cookie-jar-aware client: login sets an HttpOnly refresh cookie and a readable CSRF cookie,
+  response body carries no refresh token; refresh without a CSRF header 403s; refresh with a
+  wrong CSRF header 403s; a correct refresh rotates BOTH cookies; replaying an already-rotated
+  refresh token 401s AND revokes the whole token family (verified by then replaying the
+  legitimate successor too — also 401, proving the family-wide revocation actually ran, not
+  just the one token); logout succeeds even without a CSRF header (best-effort, matching the
+  existing "always let a client discard a token" contract) and dead-ends the refresh token
+  immediately after. Also verified the real browser preflight path: an `OPTIONS` request with
+  `Access-Control-Request-Headers: x-csrf-token` gets back `Access-Control-Allow-Headers`
+  including `X-CSRF-Token` and `Access-Control-Allow-Credentials: true`.
+- One false alarm caught and corrected during this verification, not a real bug: an early test
+  using a second `requests.Session` with a manually-set cookie appeared to show the family-wide
+  revocation NOT working. Root-caused to the test harness, not the code — the manually-set
+  cookie was never actually being sent by that client (confirmed by inspecting the prepared
+  request's actual `Cookie` header, which was empty), so the "replay" was silently hitting the
+  "no cookie at all" branch instead of the reuse-detection branch the whole time. Re-verified
+  with a corrected harness (reusing the SAME session's cookie jar rather than a second one) and
+  the family-wide revocation is confirmed correct. Also spot-verified the underlying service
+  function (`rotate_refresh_token`/`_revoke_all_for_user`) in isolation, bypassing HTTP
+  entirely, before trusting the HTTP-level result — this project's standard of not taking a
+  single script's output as proof without understanding why it passed or failed.
+- Live-verified `deal.assign`: a Sales Manager can list assignable users and reassign a
+  quotation; a Sales Rep gets 403 from both; reassigning to a customer-role user 422s. One real
+  bug caught here too: the first version reassigned by setting `owner_id` directly, which left
+  the ORM's already-loaded `owner` relationship stale in the session's identity map for the rest
+  of the request — `_detail()`'s response reported the OLD owner's name even though the
+  database write was correct. Fixed by assigning the relationship (`quotation.owner = new_owner`)
+  instead of just the FK scalar, which keeps both in sync; confirmed fixed via a follow-up `GET`
+  independent of the mutating request's in-memory state.
+- Live-verified the role-change endpoint: promotion succeeds; self-change 409s; changing a
+  portal account's role 409s; changing an internal account INTO the customer role 422s; a
+  non-`user.manage` caller (Sales Manager) gets 403.
+- Live-verified email delivery: an invite call returns `email_sent: true`, and the email is
+  confirmed present in Mailpit's own API (`GET /api/v1/messages` on :8025) with the correct
+  recipient and subject.
+
+### Known Issues
+- CSRF failures and a missing/garbled refresh cookie all collapse to the same 401/403 shapes as
+  every other auth failure in this app, by design (SECURITY_SPEC.md's generic-failure
+  philosophy) — this makes debugging a genuine CSRF misconfiguration from the outside slightly
+  harder than a dedicated error message would, an intentional trade-off, not an oversight.
+- `deal.assign` and the new role-change endpoint have no pytest coverage yet, only live
+  verification against the running system — matches this project's established pattern for
+  features added via live-API scripts, but a real gap if a future change to either regresses
+  silently between live-verification passes.
+
+### Current State
+Every item that was on the "Deferred deliberately" list two entries ago is now either done
+(cookies+CSRF, `deal.assign`, the role-change endpoint, the signup gate, real email delivery) or
+still deliberately deferred for the same reason as before (the two scheduler-shaped gaps,
+bonus scope). `DEMO.md` is gone; `PROJECT_CONTEXT.md`'s "Remaining Work" is the current,
+accurate source of truth instead.
+
+### Next Recommended Step
+Nothing is blocking. The two remaining scheduler-shaped gaps (automatic backorder consolidation,
+automatic subscription renewal) are the largest genuinely-deferred items left, if continuing.

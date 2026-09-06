@@ -63,12 +63,38 @@ class Settings(BaseSettings):
     )
 
     # --- Invitations ---------------------------------------------------------
-    # Used only to build the activation link returned by
-    # `POST /admin/users/invite` (`/activate/<token>` on the SPA router).
-    # There is no email infrastructure in this project (see
-    # PROJECT_CONTEXT.md) - the link is handed back to the Admin to copy and
-    # send however they already reach the invitee.
+    # Used to build the activation link (`/activate/<token>` on the SPA
+    # router) both for the email sent below and for the copy-link fallback
+    # still returned to the Admin in the API response.
     FRONTEND_BASE_URL: str = "http://localhost:5173"
+
+    # --- Signup --------------------------------------------------------------
+    # PRD A1 grants open self-signup for Sales Reps, which is right for a
+    # hackathon demo and wrong left on in production (anyone gets an empty
+    # internal workspace). A single flag rather than an ENVIRONMENT-based
+    # implicit rule: production might legitimately want signup on for a
+    # limited launch, or a non-production environment might want it off for
+    # a specific test - the two concerns are independent, so they get
+    # independent knobs. Defaults True so nothing in this project's existing
+    # demo/dev flow changes unless this is explicitly set.
+    ALLOW_PUBLIC_SIGNUP: bool = True
+
+    # --- Email (invitations) --------------------------------------------------
+    # Real SMTP delivery for invite links (`services/mailer.py`). Points at
+    # Mailpit in this docker-compose stack - a local dev-only mail catcher
+    # with no real external account, whose web inbox (SMTP_WEB_URL) is where
+    # a sent email actually lands. Swapping to a real provider in production
+    # is a .env change only (a real host/port/credentials), never a code
+    # change - `mailer.py` speaks plain SMTP either way.
+    SMTP_HOST: str = "mailpit"
+    SMTP_PORT: int = 1025
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_USE_TLS: bool = False
+    SMTP_FROM: str = "DealFlow360 <no-reply@dealflow360.example>"
+    # Not sent to; purely to print a clickable link in server logs so a
+    # developer without the Mailpit UI open still sees where mail went.
+    SMTP_WEB_URL: str = "http://localhost:8025"
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

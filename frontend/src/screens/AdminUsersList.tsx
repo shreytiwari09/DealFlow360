@@ -16,14 +16,18 @@ import { ApiError, api } from "../lib/api";
 import type { AdminCustomer, AdminUser, InviteUserResult, RoleOption } from "../lib/api";
 import { dateTime } from "../lib/format";
 import { ErrorState, NoteBar, PageHeader, TableSkeleton } from "../components/ui";
+import { useAuth } from "../lib/auth";
 
 const CUSTOMER_ROLE_CODE = "customer";
 
 export default function AdminUsersList() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [customers, setCustomers] = useState<AdminCustomer[] | null>(null);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [roleEdits, setRoleEdits] = useState<Record<number, string>>({});
+  const [savingRoleFor, setSavingRoleFor] = useState<number | null>(null);
 
   const [form, setForm] = useState({ email: "", full_name: "", role_id: "", customer_id: "" });
   const [showNewCustomer, setShowNewCustomer] = useState(false);
@@ -115,6 +119,28 @@ export default function AdminUsersList() {
       setError(err instanceof ApiError ? err.message : "Could not send that invitation.");
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function saveRole(target: AdminUser) {
+    const newRoleId = roleEdits[target.id];
+    if (!newRoleId || Number(newRoleId) === target.role_id) return;
+    setSavingRoleFor(target.id);
+    setError(null);
+    try {
+      const updated = await api.patch<AdminUser>(`/admin/users/${target.id}/role`, {
+        role_id: Number(newRoleId),
+      });
+      setUsers((current) => current?.map((u) => (u.id === updated.id ? updated : u)) ?? null);
+      setRoleEdits((current) => {
+        const next = { ...current };
+        delete next[target.id];
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not change that user's role.");
+    } finally {
+      setSavingRoleFor(null);
     }
   }
 
@@ -269,10 +295,23 @@ export default function AdminUsersList() {
 
           {lastInvite && (
             <div style={{ marginTop: "var(--space-4)" }}>
-              <NoteBar>
-                Invitation created for <strong>{lastInvite.user.email}</strong>. There is no email
-                sending in this project — copy this link and send it to them yourself. It expires{" "}
-                {dateTime(lastInvite.expires_at)}.
+              <NoteBar tone={lastInvite.email_sent ? "info" : "warning"}>
+                {lastInvite.email_sent ? (
+                  <>
+                    Invitation emailed to <strong>{lastInvite.user.email}</strong> (local dev —
+                    check Mailpit at{" "}
+                    <a href="http://localhost:8025" target="_blank" rel="noreferrer">
+                      localhost:8025
+                    </a>{" "}
+                    to read it). It expires {dateTime(lastInvite.expires_at)}.
+                  </>
+                ) : (
+                  <>
+                    Invitation created for <strong>{lastInvite.user.email}</strong>, but sending
+                    the email failed — copy this link and send it to them yourself. It expires{" "}
+                    {dateTime(lastInvite.expires_at)}.
+                  </>
+                )}
               </NoteBar>
               <div className="row" style={{ gap: "var(--space-2)", marginTop: "var(--space-2)" }}>
                 <input className="input" readOnly value={lastInvite.invite_url} />
@@ -298,23 +337,64 @@ export default function AdminUsersList() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
-                  <tr key={u.id}>
-                    <td className="primary-cell">{u.full_name}</td>
-                    <td className="sub-cell">{u.email}</td>
-                    <td>{u.role_name}</td>
-                    <td className="sub-cell">{u.customer_name ?? "—"}</td>
-                    <td>
-                      {u.is_active ? (
-                        <span className="badge badge--success">Active</span>
-                      ) : u.has_password ? (
-                        <span className="badge badge--neutral">Deactivated</span>
-                      ) : (
-                        <span className="badge badge--warning">Invited — not yet activated</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {users.map((u) => {
+                  // Role changes only apply to internal accounts (portal
+                  // roles stay tied to their customer_id link, set only at
+                  // invite time — see PATCH /admin/users/{id}/role's own
+                  // docstring), and never to your own account, to avoid an
+                  // accidental self-demotion/lockout.
+                  const canEditRole = u.role_code !== CUSTOMER_ROLE_CODE && u.id !== currentUser?.id;
+                  return (
+                    <tr key={u.id}>
+                      <td className="primary-cell">{u.full_name}</td>
+                      <td className="sub-cell">{u.email}</td>
+                      <td>
+                        {canEditRole ? (
+                          <div className="row" style={{ gap: "var(--space-2)" }}>
+                            <select
+                              className="select"
+                              value={roleEdits[u.id] ?? String(u.role_id)}
+                              onChange={(e) =>
+                                setRoleEdits((current) => ({ ...current, [u.id]: e.target.value }))
+                              }
+                            >
+                              {roles
+                                .filter((r) => r.code !== CUSTOMER_ROLE_CODE)
+                                .map((r) => (
+                                  <option key={r.id} value={r.id}>
+                                    {r.name}
+                                  </option>
+                                ))}
+                            </select>
+                            {roleEdits[u.id] !== undefined &&
+                              Number(roleEdits[u.id]) !== u.role_id && (
+                                <button
+                                  type="button"
+                                  className="btn btn--sm"
+                                  disabled={savingRoleFor === u.id}
+                                  onClick={() => void saveRole(u)}
+                                >
+                                  {savingRoleFor === u.id ? "Saving…" : "Save"}
+                                </button>
+                              )}
+                          </div>
+                        ) : (
+                          u.role_name
+                        )}
+                      </td>
+                      <td className="sub-cell">{u.customer_name ?? "—"}</td>
+                      <td>
+                        {u.is_active ? (
+                          <span className="badge badge--success">Active</span>
+                        ) : u.has_password ? (
+                          <span className="badge badge--neutral">Deactivated</span>
+                        ) : (
+                          <span className="badge badge--warning">Invited — not yet activated</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -5,10 +5,10 @@ Build the full PRD scope per its own Core/Supporting/Bonus classification (PLAN.
 
 **Where we are right now:** Phases 1, 2, 3 and 5 are all complete, plus a Phase 8 frontend
 slice brought forward at the user's request. **Every Core (🔴) and Supporting (🟡) item in
-PLAN.md Section 18's classification is done.** There is a working, demoable application — see
-`DEMO.md`, the verified script to run in front of an interviewer (its script currently covers
-the two original approval flows plus fulfillment, billing and portal negotiation; the Phase 5
-screens are real and tested but not yet added to that script — see its own changelog note).
+PLAN.md Section 18's classification is done.** There is a working, demoable application — no
+standing demo script is kept in the repo (removed 2026-09-06 after it went stale twice in a
+row); walk the app directly, or see this file's "Remaining Work" for the current, accurate
+state.
 
 Working end to end: login for all five roles, quotation builder with a live blended risk score,
 order-level and per-line discounts, a subscription-plan picker for hybrid lines, and a real
@@ -26,7 +26,7 @@ optional) and the deliberately-deferred items below remain. See "Remaining Work.
 
 **Source-of-truth documents:** `PLAN.md` (process and order), `PROJECT_CONTEXT.md` (this file),
 `IMPLEMENTATION_LOG.md` (history), `SECURITY_SPEC.md` (security contract), `FRONTEND.md`
-(screens and visual system), `DEMO.md` (what to show, and what not to claim).
+(screens and visual system).
 
 ## Product Understanding
 DealFlow360 is a self-governing B2B sales operations platform — a full quote-to-cash system, not a simple quote-to-invoice tool. Core value: automatic discount discipline (blended risk scoring), real-time multi-warehouse inventory awareness, reconciled one-time + recurring billing on a single order, and a live customer negotiation portal.
@@ -907,8 +907,7 @@ auto-generated split → Accept, Manual Override, Consolidate-after-restock) wer
 the real UI headlessly; everything built since (billing, portal, upsell, deal health,
 reporting, admin config) compiles and type-checks against the real API (`tsc -b && vite build`
 clean) and was verified via live-API scripts, but has not yet had a full browser click-through
-— tracked in `IMPLEMENTATION_LOG.md`'s Known Issues. `DEMO.md` covers fulfillment, billing and
-portal negotiation; the Phase 5 screens are not yet in its script (see its own changelog note).
+— tracked in `IMPLEMENTATION_LOG.md`'s Known Issues.
 
 ## Remaining Work
 
@@ -921,18 +920,6 @@ these optional) and the items below remain.
 
 ### Deferred deliberately
 
-- **HttpOnly cookie auth** — the refresh token currently lives in `sessionStorage`, mirrored to
-  `localStorage` purely as a same-browser "last active session" bootstrap for a brand-new tab
-  (see IMPLEMENTATION_LOG.md 2026-09-05 for the original cross-tab bug this design fixes, and
-  2026-09-06 for the deep-link-in-a-new-tab bug the localStorage fallback fixes on top of it).
-  SECURITY_SPEC Section 7 prefers cookies and that remains the right end state; it needs CSRF
-  handling and a same-site story the split localhost origins do not currently allow
-- **`PATCH /api/v1/admin/users/{id}/role`** — superseded, not merely deferred. Locked Business
-  Rules #5 originally intended this for promoting a self-registered Sales Rep, but
-  `POST /admin/users/invite` (2026-09-06, part 2) now lets an Admin provision a user straight
-  into the right role from the start, which is the pattern real ERPs actually use. A dedicated
-  role-change endpoint for an *existing* user (demotion, or correcting a mis-provisioned role)
-  is still genuinely absent — an Admin edits the row directly for that narrower case
 - **Fully-automatic backorder consolidation** — PRD B6's "prompt appears automatically" needs a
   background job watching for restocks. What exists now (`POST
   /fulfillment/{id}/backorders/{id}/consolidate`) is the manual trigger that prompt would call;
@@ -941,12 +928,35 @@ these optional) and the items below remain.
   `current_cycle_end` forward when a cycle ends, or generates the next `recurring`
   `BillingSchedule` row automatically. Every subscription created by the demo stays on its first
   cycle indefinitely. Same category of gap as backorder consolidation — needs a scheduler
-- **Restricting public signup** — signup grants an empty internal workspace to anyone. Acceptable
-  for a hackathon, wrong for production; belongs in the "what we'd build next" deliverable
-- **`deal.assign`** ("Reassign a quotation to another rep") is a real permission in `app/seed.py`
-  with no endpoint or UI behind it anywhere — found during the 2026-09-06 bug sweep below, not
-  built (out of scope for that pass, not forgotten)
 - Bonus scope (multi-currency, multi-company) — untouched, correctly
+
+### Resolved (2026-09-06, part 3) — previously listed here as deferred
+
+- **HttpOnly cookie auth** — done. The refresh token now lives ONLY in an HttpOnly cookie
+  (`core/cookies.py`), never in a JSON body or browser-script-accessible storage. CSRF is a
+  signed double-submit token (`core/csrf.py`): `HMAC(JWT_SECRET_KEY, refresh-token jti)`, not two
+  independent random values, so an attacker who cannot read the HttpOnly cookie's jti cannot
+  mint a matching header even if they can plant an unrelated cookie. This also retired the
+  entire sessionStorage/localStorage bootstrap-fallback mechanism from 2026-09-05/06 — a cookie
+  is already shared correctly across a browser's own tabs, so the "which tab's copy is real"
+  problem that machinery existed to solve no longer exists
+- **`deal.assign`** — done. `GET /quotations/assignable-users` + `PATCH /quotations/{id}/assign`,
+  gated by `deal.assign` (Sales Manager, per seed) as a flat permission like `config.manage`/
+  `user.manage` elsewhere — not scoped to "your own team," since no other permission in this
+  app's model is team-scoped either
+- **A role-change endpoint for an existing user** — done, but narrower than a full replacement
+  for the old `PATCH .../role` idea: `PATCH /admin/users/{id}/role` only moves a user between
+  INTERNAL roles (never into/out of `customer`, which needs the invite flow's `customer_id`
+  link), never lets an Admin change their own role, and rejects changing a portal account's role
+  here at all
+- **Restricting public signup** — done. `ALLOW_PUBLIC_SIGNUP` (default `true`, unchanged
+  demo/dev behavior) gates `POST /auth/signup` with a 403 when set `false`
+- **Real email delivery for invite links** — done, via Mailpit (a local dev mail-catcher added
+  to `docker-compose.yml`, not a real provider — see its own comment for the Section 0.5
+  reasoning). `services/mailer.py` speaks real SMTP either way; swapping to a production
+  provider is a `.env` change, not a code change. The copy-link fallback in the API response
+  stays regardless (`InviteUserResponse.email_sent`), so an SMTP outage can never make an
+  invitation un-actionable
 
 ## Do Not Change / Do Not Break
 - **Blended risk score formula — now locked.** See Locked Business Rules #1. Do not let a

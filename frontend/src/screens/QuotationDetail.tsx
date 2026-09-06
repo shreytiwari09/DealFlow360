@@ -12,8 +12,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
-import type { Product, Quotation, RiskPreview, SubscriptionPlan, UpsellSuggestion } from "../lib/api";
+import type {
+  AssignableUser,
+  Product,
+  Quotation,
+  RiskPreview,
+  SubscriptionPlan,
+  UpsellSuggestion,
+} from "../lib/api";
 import { humanise, money, percent, points } from "../lib/format";
+import { useAuth } from "../lib/auth";
 import {
   ErrorState,
   NoteBar,
@@ -38,8 +46,13 @@ interface DraftLine {
 export default function QuotationDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { can } = useAuth();
 
   const [quotation, setQuotation] = useState<Quotation | null>(null);
+  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[] | null>(null);
+  const [showReassign, setShowReassign] = useState(false);
+  const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
+  const [reassigning, setReassigning] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [risk, setRisk] = useState<RiskPreview | null>(null);
@@ -82,6 +95,37 @@ export default function QuotationDetail() {
       setSuggestions([]);
     }
   }, []);
+
+  async function openReassign() {
+    setError(null);
+    setShowReassign(true);
+    if (!assignableUsers) {
+      try {
+        setAssignableUsers(await api.get<AssignableUser[]>("/quotations/assignable-users"));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load the rep list.");
+        setShowReassign(false);
+      }
+    }
+  }
+
+  async function reassign() {
+    if (!quotation || !selectedAssigneeId) return;
+    setReassigning(true);
+    setError(null);
+    try {
+      const updated = await api.patch<Quotation>(`/quotations/${quotation.id}/assign`, {
+        new_owner_id: Number(selectedAssigneeId),
+      });
+      setQuotation(updated);
+      setShowReassign(false);
+      setSelectedAssigneeId("");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not reassign this quotation.");
+    } finally {
+      setReassigning(false);
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -361,6 +405,55 @@ export default function QuotationDetail() {
           </>
         }
       />
+
+      <div className="row" style={{ gap: "var(--space-2)", alignItems: "center", marginBottom: "var(--space-3)" }}>
+        <span className="muted">
+          Owned by <strong>{quotation.owner_name}</strong>
+        </span>
+        {can("deal.assign") && !showReassign && (
+          <button type="button" className="btn btn--sm" onClick={() => void openReassign()}>
+            Reassign
+          </button>
+        )}
+      </div>
+
+      {showReassign && (
+        <div className="card" style={{ marginBottom: "var(--space-4)" }}>
+          {!assignableUsers ? (
+            <p className="muted">Loading…</p>
+          ) : (
+            <div className="row" style={{ gap: "var(--space-3)", alignItems: "flex-end" }}>
+              <div className="field">
+                <label className="field__label">Reassign to</label>
+                <select
+                  className="select"
+                  value={selectedAssigneeId}
+                  onChange={(e) => setSelectedAssigneeId(e.target.value)}
+                >
+                  <option value="">Choose…</option>
+                  {assignableUsers
+                    .filter((u) => u.id !== quotation.owner_id)
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.full_name} ({u.role_name})
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <button
+                className="btn btn--primary"
+                disabled={reassigning || !selectedAssigneeId}
+                onClick={() => void reassign()}
+              >
+                {reassigning ? "Reassigning…" : "Confirm reassign"}
+              </button>
+              <button className="btn" onClick={() => setShowReassign(false)}>
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div style={{ marginBottom: "var(--space-4)" }}>

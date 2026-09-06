@@ -16,9 +16,8 @@ SQLAlchemy 2 (async) + Alembic · Docker Compose for the backend/frontend.
 > routing, multi-warehouse fulfillment with backorders, hybrid one-time +
 > subscription billing with proration, and a genuinely separate customer
 > negotiation portal all work end-to-end against the real API.
-> See [`DEMO.md`](DEMO.md) for the exact script — every number in it was
-> verified against the running system. `IMPLEMENTATION_LOG.md` has the full
-> chronological build history; `PROJECT_CONTEXT.md` has the current backlog.
+> `IMPLEMENTATION_LOG.md` has the full chronological build history;
+> `PROJECT_CONTEXT.md` has the current backlog.
 
 ---
 
@@ -92,11 +91,13 @@ curl http://localhost:8000/api/v1/health/ready
 
 ## Giving the demo
 
-Follow **[`DEMO.md`](DEMO.md)** — it is the verified script: exactly what to
-click, the exact numbers you should see at each step, the security talking
-points, and an explicit list of what is *not* built yet (so you're never
-surprised by a question). Every claim in it was checked against the running
-system, not written from memory.
+There is no standing demo script in this repo — `PROJECT_CONTEXT.md`'s
+"Remaining Work" section is the current, accurate list of what is and isn't
+built, and `IMPLEMENTATION_LOG.md` is the chronological record of what was
+verified and when. Walk the app itself: sign up or log in as a Sales Rep,
+build a quotation, watch it route for approval, accept the fulfillment split,
+and negotiate it from the customer portal — every flow described in this
+README works end-to-end against the real API, not a mock.
 
 ### A frozen, known-good checkpoint
 
@@ -255,8 +256,8 @@ sessionStorage.clear(); localStorage.clear();
 
 **Dashboard/lists show all zeros or an empty table right after a reset.**
 That's correct, not broken — a fresh reset genuinely has no quotations yet.
-Click **+ New Quotation** to create one, or see `DEMO.md` for a full script
-that populates realistic demo data as it goes.
+Click **+ New Quotation** to create one, or run `docker compose exec backend
+python -m app.seed` for realistic demo data.
 
 **`alembic upgrade head` or the seed command fails right after `docker compose up`.**
 Confirm your local Postgres is actually running and the credentials/port in
@@ -282,7 +283,6 @@ after changing `requirements.txt`.
 ├── IMPLEMENTATION_LOG.md    Chronological record of what was actually built
 ├── SECURITY_SPEC.md         Authoritative security implementation contract
 ├── FRONTEND.md              Screen-by-screen UI spec (the Phase 8 design input)
-├── DEMO.md                  Verified demo script — what to click, expected numbers
 ├── docs/erd.md              ERD, system architecture diagram, state machines
 ├── docker-compose.yml       Backend + frontend only — Postgres runs on the host
 ├── .env.example             Placeholder environment file

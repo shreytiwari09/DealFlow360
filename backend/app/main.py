@@ -40,9 +40,15 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    # Required for the browser to send/receive cookies cross-origin
+    # (frontend on :5173, backend on :8000) - this was already on for the
+    # Authorization-header flow, and the refresh-token cookie now depends on
+    # it too (core/cookies.py).
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    # X-CSRF-Token: the double-submit header `core/csrf.py`'s protected
+    # routes (refresh, logout) require alongside the cookie.
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
 )
 
 # Rate limiting (SECURITY_SPEC.md Section 5). The limiter must be on

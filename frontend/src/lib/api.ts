@@ -13,131 +13,56 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000
 const V1 = `${API_BASE_URL}/api/v1`;
 
 /*
- * Tokens live in memory, with the refresh token mirrored to sessionStorage so
- * a page reload does not log the user out.
+ * The refresh token lives ONLY in an HttpOnly cookie the browser manages
+ * entirely on its own (SECURITY_SPEC.md Section 7) — this file never reads,
+ * stores, or even sees its value. That single fact is what retired the
+ * sessionStorage/localStorage machinery that used to live here: a cookie is
+ * already scoped correctly per-browser and sent automatically by the browser
+ * on every request to its own path, which is exactly the property the old
+ * bootstrap-fallback dance existed to approximate by hand across tabs (a new
+ * tab just... has the cookie, the same way every tab always has it — there
+ * is no "which tab's copy is the real one" question left to answer).
  *
- * sessionStorage, not localStorage, as the per-tab SOURCE OF TRUTH. localStorage
- * is shared across every tab of the same browser, so two tabs signed in as
- * different users (exactly the "rep in one window, manager in another" setup
- * this app's own demo script asks for) would otherwise fight over one stored
- * session: whichever tab last touched storage silently evicts the other's
- * login. sessionStorage is per-tab, so each tab keeps its own identity
- * independent of what any other tab does, while still surviving a reload of
- * that same tab.
+ * `credentials: "include"` on every request is what makes the browser
+ * attach that cookie at all for the cross-origin call to :8000 from :5173 —
+ * paired with the backend's `allow_credentials=True` CORS setting. The
+ * cookie's own `Path=/api/v1/auth` means the browser still only actually
+ * SENDS it to the auth routes that need it; harmless to request it
+ * everywhere else.
  *
- * BUT sessionStorage alone breaks a real workflow: a brand-new tab (a deep
- * link opened from Slack/email, a bookmark, ctrl-click, or pasting a URL)
- * starts with EMPTY sessionStorage no matter how logged-in the user is
- * elsewhere in the same browser — that tab bounces straight to /login even
- * though the user never signed out. localStorage is kept alongside
- * sessionStorage as a "last known session" bootstrap value purely for this
- * case: a brand-new tab with nothing of its own falls back to it once, then
- * behaves exactly like any other tab from that point on (its own
- * sessionStorage copy, immune to what other tabs do afterward). Explicit
- * sign-out clears the fallback too, but only if it still points at the
- * session being signed out of — so one tab signing out can never silently
- * kill a *different* identity that another, still-open tab is using.
- *
- * The bootstrap must only ever happen ONCE per tab, the very first time that
- * tab asks for a token at all — never again after that, even once this tab's
- * own copy is later cleared. Without that rule, explicitly signing out in
- * this tab would immediately re-bootstrap it right back from the shared
- * fallback if some OTHER identity happened to be sitting there (a manager
- * still active in a different tab, say) — turning "sign out" into "silently
- * sign in as someone else," which is worse than the deep-link bug this whole
- * mechanism exists to fix. `BOOTSTRAPPED_KEY` is the marker for "this tab has
- * an opinion of its own now, stop asking the shared pool."
- *
- * SECURITY_SPEC.md Section 7 prefers HttpOnly cookies over either Storage
- * mechanism, and that remains the right end state. This is a deliberate,
- * documented gap for the demo: cookie auth needs CSRF protection and a
- * same-site story that the split localhost:5173 / localhost:8000 origins do
- * not currently give us. Tracked in PROJECT_CONTEXT.md Known Issues.
+ * The access token remains in-memory only, exactly as before: it is a
+ * short-lived bearer credential attached manually via `Authorization`, which
+ * carries none of a cookie's CSRF exposure and none of localStorage's
+ * XSS-exfiltration risk either way.
  */
-const REFRESH_KEY = "dealflow.refresh";
-const BOOTSTRAPPED_KEY = "dealflow.bootstrapped";
-
 let accessToken: string | null = null;
 
-export function getRefreshToken(): string | null {
-  try {
-    const ownToken = sessionStorage.getItem(REFRESH_KEY);
-    if (ownToken) return ownToken;
-    // This tab has already had its own identity established (and since
-    // cleared, e.g. by an explicit sign-out) — never re-adopt whatever the
-    // shared pool currently holds, even if it looks like a valid session.
-    if (sessionStorage.getItem(BOOTSTRAPPED_KEY)) return null;
-  } catch {
-    /* private browsing or storage disabled — fall through to the shared copy */
-  }
-
-  try {
-    const lastKnown = localStorage.getItem(REFRESH_KEY);
-    if (lastKnown) {
-      // Bootstrap this tab from the shared fallback, once. From here on this
-      // tab has its own sessionStorage copy and is independent of whatever
-      // any other tab does next.
-      sessionStorage.setItem(REFRESH_KEY, lastKnown);
-      sessionStorage.setItem(BOOTSTRAPPED_KEY, "1");
-      return lastKnown;
-    }
-  } catch {
-    /* private browsing or storage disabled */
-  }
-  return null;
+function getCsrfToken(): string | null {
+  const match = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
-/**
- * `background: true` is the one case that must NOT touch the shared
- * localStorage fallback: a routine access-token rotation (every ~15 minutes,
- * silently, in every open tab) is not a new identity becoming active — it is
- * the SAME identity's token being renewed. Writing it to localStorage
- * unconditionally would reintroduce exactly the bug sessionStorage was
- * adopted to fix in the first place, just one layer down: tab A's ordinary
- * background refresh would silently overwrite tab B's still-active identity
- * in the shared fallback, so a brand-new tab C opened right after would
- * bootstrap into A's session instead of B's, purely because of refresh
- * timing neither tab's user had any control over. An explicit sign-in
- * (`signIn`/`signUp` in `auth.tsx`) IS a new identity becoming active and
- * updates the fallback normally; only `refreshAccessToken()`'s own success
- * path below passes `background: true`.
- */
-export function setTokens(
-  access: string | null,
-  refresh: string | null,
-  { background = false }: { background?: boolean } = {},
-): void {
-  accessToken = access;
+/** Called by `auth.tsx` after a successful sign-in/sign-up/invite-accept —
+ * those endpoints already set the refresh+CSRF cookies themselves via
+ * `Set-Cookie`; this is only the in-memory half. */
+export function setAccessToken(token: string | null): void {
+  accessToken = token;
+}
 
-  let previousOwnToken: string | null = null;
+/** `auth.tsx`'s `signOut()`. Best-effort and CSRF-guarded like the backend
+ * route itself — a missing/expired cookie is not an error to the caller,
+ * since the point is just "make sure this session is over" either way. */
+export async function logout(): Promise<void> {
   try {
-    previousOwnToken = sessionStorage.getItem(REFRESH_KEY);
+    await fetch(`${V1}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": getCsrfToken() ?? "" },
+    });
   } catch {
-    /* ignore */
+    /* the local sign-out below must proceed regardless of network state */
   }
-
-  try {
-    if (refresh) sessionStorage.setItem(REFRESH_KEY, refresh);
-    else sessionStorage.removeItem(REFRESH_KEY);
-    // From this point on this tab has its own established state (signed in
-    // or explicitly signed out) and must never again silently bootstrap from
-    // the shared fallback — see `getRefreshToken()`'s docstring.
-    sessionStorage.setItem(BOOTSTRAPPED_KEY, "1");
-  } catch {
-    /* private browsing — the session simply will not survive a reload */
-  }
-
-  if (background) return;
-
-  try {
-    if (refresh) {
-      localStorage.setItem(REFRESH_KEY, refresh);
-    } else if (previousOwnToken && localStorage.getItem(REFRESH_KEY) === previousOwnToken) {
-      localStorage.removeItem(REFRESH_KEY);
-    }
-  } catch {
-    /* private browsing or storage disabled */
-  }
+  accessToken = null;
 }
 
 export class ApiError extends Error {
@@ -162,27 +87,26 @@ async function raw(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
-  return fetch(`${V1}${path}`, { ...init, headers });
+  return fetch(`${V1}${path}`, { ...init, headers, credentials: "include" });
 }
 
 async function refreshAccessToken(): Promise<boolean> {
-  const refresh = getRefreshToken();
-  if (!refresh) return false;
+  // No body, no stored token to check for — the refresh_token cookie IS the
+  // credential, and the browser attaches it on its own. A brand-new tab with
+  // no session simply gets a 401 here, same as any other unauthenticated
+  // call; there is no separate "do we even have a token to try" question to
+  // ask first anymore.
   const response = await fetch(`${V1}/auth/refresh`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refresh }),
+    credentials: "include",
+    headers: { "X-CSRF-Token": getCsrfToken() ?? "" },
   });
   if (!response.ok) {
-    setTokens(null, null);
+    accessToken = null;
     return false;
   }
   const data = (await response.json()) as TokenResponse;
-  // background: true - see setTokens's own docstring. This is a routine
-  // rotation of the SAME identity's token, not a new sign-in, and must not
-  // overwrite the shared "last active session" fallback other tabs bootstrap
-  // brand-new tabs from.
-  setTokens(data.access_token, data.refresh_token, { background: true });
+  accessToken = data.access_token;
   return true;
 }
 
@@ -191,16 +115,10 @@ async function refreshAccessToken(): Promise<boolean> {
  * 401 we rotate once and replay the request; if the rotation also fails the
  * session is genuinely over and the caller sees a 401.
  *
- * The retry fires on ANY 401, not only when `accessToken` is already set.
- * Gating it on an in-memory access token was the actual bug: on a fresh page
- * load `accessToken` starts as null even when a perfectly valid refresh
- * token is sitting in storage, so the very call meant to resume the session
- * skipped the refresh path entirely, fell through to the generic 401, and
- * `resume()` in auth.tsx reacted by wiping the stored token — turning "resume
- * my session" into "log everyone out on every reload." `refreshAccessToken()`
- * already returns false immediately when there is no stored refresh token,
- * so dropping the guard does not risk looping on a genuinely unauthenticated
- * request.
+ * The retry fires on ANY 401, not only when `accessToken` is already set:
+ * on a fresh page load `accessToken` starts as null even when the refresh
+ * cookie is perfectly valid, so the very call meant to resume the session
+ * must not skip the refresh path just because nothing is in memory yet.
  */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response = await raw(path, init);
@@ -250,6 +168,8 @@ export const api = {
     request<T>(path, { method: "POST", body: JSON.stringify(payload ?? {}) }),
   put: <T>(path: string, payload: unknown) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(payload) }),
+  patch: <T>(path: string, payload: unknown) =>
+    request<T>(path, { method: "PATCH", body: JSON.stringify(payload) }),
   download,
 };
 
@@ -257,7 +177,6 @@ export const api = {
 
 export interface TokenResponse {
   access_token: string;
-  refresh_token: string;
   token_type: string;
 }
 
@@ -317,6 +236,7 @@ export interface QuotationSummary {
   quote_number: string;
   customer_id: number;
   customer_name: string;
+  owner_id: number;
   owner_name: string;
   status: string;
   total_amount: string;
@@ -339,6 +259,12 @@ export interface Quotation extends QuotationSummary {
   version: number;
   lines: QuotationLine[];
   can_edit: boolean;
+}
+
+export interface AssignableUser {
+  id: number;
+  full_name: string;
+  role_name: string;
 }
 
 export interface RiskLine {
@@ -736,6 +662,7 @@ export interface InviteUserResult {
   user: AdminUser;
   invite_url: string;
   expires_at: string;
+  email_sent: boolean;
 }
 
 export interface InvitationPreview {

@@ -34,6 +34,21 @@ so nothing before that caught it):
     not a materially wider security exposure - the value is already
     designed to be freely JS-readable, so widening WHERE it is readable
     changes nothing about what an attacker can do with it.
+
+`SameSite` is also environment-dependent, for a related but distinct reason.
+Local dev has frontend (:5173) and backend (:8000) on the same host
+("localhost"), which browsers treat as the same SITE regardless of port -
+`Lax` cookies flow between them with no extra config. A split-platform
+production deploy (frontend on Vercel, backend on Render) puts them on two
+entirely different registrable domains - genuinely cross-site, not just
+cross-origin - and `Lax` cookies are simply never sent on a cross-site
+fetch/XHR at all, no matter what CORS says. `SameSite=None` is required for
+that topology, and browsers refuse to honor `None` without `Secure` - hence
+both being tied to the same `is_production` flag below. This does NOT weaken
+CSRF protection here: the actual CSRF defense is the signed double-submit
+token in `core/csrf.py` (a value a cross-site attacker's page cannot read,
+regardless of SameSite), not `SameSite` itself - `SameSite=Lax` in dev was
+always a second, redundant layer on top of that, never the only one.
 """
 
 from __future__ import annotations
@@ -54,13 +69,17 @@ def set_auth_cookies(response: Response, *, refresh_token: str, jti: str) -> Non
     # `Secure` requires HTTPS - forcing it on in local dev (plain http://)
     # would mean the browser silently drops the cookie and nothing works.
     # `is_production` already gates the same trade-off for the OpenAPI docs.
+    # `SameSite=None` requires `Secure` too (browsers reject the pairing
+    # otherwise), which is why both are the same expression - see the
+    # module docstring for why production needs `None` at all.
     secure = settings.is_production
+    samesite = "none" if settings.is_production else "lax"
     response.set_cookie(
         REFRESH_COOKIE,
         refresh_token,
         max_age=max_age,
         httponly=True,
-        samesite="lax",
+        samesite=samesite,
         secure=secure,
         path=REFRESH_COOKIE_PATH,
     )
@@ -73,7 +92,7 @@ def set_auth_cookies(response: Response, *, refresh_token: str, jti: str) -> Non
         compute_csrf_token(jti),
         max_age=max_age,
         httponly=False,
-        samesite="lax",
+        samesite=samesite,
         secure=secure,
         path=CSRF_COOKIE_PATH,
     )

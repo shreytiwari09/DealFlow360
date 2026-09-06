@@ -1,0 +1,97 @@
+# Render Blueprint — deploys the backend + a managed Postgres in one pass.
+#
+# Usage: Render dashboard -> New -> Blueprint -> pick this repo. Render reads
+# this file automatically. Values marked `sync: false` are secrets Render
+# will prompt for once, in its dashboard, rather than storing here in git
+# (SECURITY_SPEC.md Section 8 - never commit real secrets).
+#
+# The frontend is NOT deployed from this file - it goes to Vercel separately
+# (a Vite SPA belongs on a static host/CDN, not a Render web service). See
+# DEPLOY.md for the full walkthrough, including the order these two halves
+# need to go up in.
+
+databases:
+  - name: dealflow360-db
+    databaseName: dealflow360
+    user: dealflow
+    plan: free
+
+services:
+  - type: web
+    name: dealflow360-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    # Overrides the Dockerfile's own dev CMD (which uses `--reload`, a
+    # file-watcher with no purpose once nothing edits the container's files
+    # at runtime) without touching the shared Dockerfile docker-compose also
+    # uses for local dev. Runs migrations, then the idempotent seed (safe to
+    # re-run on every deploy - app/seed.py looks every row up by its natural
+    # key rather than inserting blindly), then starts the server - so a
+    # fresh deploy always comes up with a real schema and known demo data,
+    # with no manual shell step required.
+    dockerCommand: >
+      sh -c "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+
+      # --- Database: wired straight from the managed Postgres above -------
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: dealflow360-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: dealflow360-db
+          property: port
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: dealflow360-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: dealflow360-db
+          property: password
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: dealflow360-db
+          property: database
+
+      # --- Secrets Render will prompt for in its dashboard -----------------
+      # Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      - key: JWT_SECRET_KEY
+        sync: false
+      # Resend: SMTP_USERNAME is literally "resend"; SMTP_PASSWORD is your
+      # Resend API key. See DEPLOY.md.
+      - key: SMTP_PASSWORD
+        sync: false
+
+      # --- Everything else: real values, fill in once you know them --------
+      # The exact Vercel URL - only known after the frontend's first deploy.
+      # Update this (and redeploy) once you have it; a placeholder here would
+      # just mean CORS rejects the frontend until it's corrected.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false
+
+      - key: ALLOW_PUBLIC_SIGNUP
+        value: "true"
+
+      - key: SMTP_HOST
+        value: smtp.resend.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        value: resend
+      - key: SMTP_USE_TLS
+        value: "true"
+      - key: SMTP_FROM
+        value: "DealFlow360 <onboarding@resend.dev>"
+      - key: SMTP_WEB_URL
+        value: "https://resend.com/emails"

@@ -1655,3 +1655,42 @@ existing customer's quotations. The account-creation gap flagged in the previous
 ### Next Recommended Step
 Nothing is blocking. If continuing: a narrow role-change endpoint for an existing user (not
 provisioning), or wire real email delivery to replace the copy-link UX.
+
+## 2026-09-06 — Standalone Customers Screen (Follow-Up)
+
+### Goal
+User feedback right after the invite-flow entry above: building a quotation as a Sales Rep only
+ever showed one customer (Acme Corp) to pick from. Real cause: `POST /admin/customers` existed
+on the backend (added in the entry above) but the ONLY way to reach it from the UI was the
+inline "+ New customer" toggle buried inside `AdminUsersList.tsx`'s invite form — which is
+gated on `user.manage` (Admin-only), and even for an Admin, creating a customer was awkwardly
+coupled to also inviting a portal contact for it in the same click. A Sales Manager, who already
+holds `config.manage` and already configures discount tiers and products, had **no UI path to
+create a customer at all**, despite the backend endpoint being open to them.
+
+### Implemented
+- `frontend/src/screens/AdminCustomersList.tsx` (new, `/admin/customers`, gated on
+  `config.manage` — same permission as Discount Tiers and Product Catalog, not `user.manage`).
+  A plain list + create form, no portal invite involved.
+- Removed the duplicate read-only Customers table from `AdminUsersList.tsx`; its invite form's
+  inline "+ New customer" shortcut stays (still useful for "invite a portal contact for a
+  brand-new company in one step") but now links to the new dedicated screen for the general
+  case.
+- New "Customers" nav entry, `InternalShell.tsx`, alongside Discount Tiers/Product Catalog.
+
+### Files Changed
+- `frontend/src/screens/AdminCustomersList.tsx` (new)
+- `frontend/src/screens/AdminUsersList.tsx`
+- `frontend/src/App.tsx`, `frontend/src/layouts/InternalShell.tsx`
+
+### Validation
+- `tsc -b` and `vite build` both clean.
+- Live-verified the actual permission split this was meant to fix: logged in as
+  `manager@dealflow360.example` (Sales Manager, holds `config.manage` but not `user.manage`) —
+  `POST /admin/customers` succeeds (201), `POST /admin/users/invite` correctly still 403s. No
+  backend changes this round, so the existing 230 pytest + prior live-verification suites were
+  not re-run in full; only the specific permission boundary this fix touches was re-checked.
+
+### Current State
+A Sales Rep now has more than one customer to build a quotation against, and the person who
+adds one no longer has to be an Admin or pretend to be inviting a portal user to do it.

@@ -11,9 +11,10 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, api } from "../lib/api";
 import type { AdminCustomer, AdminUser, InviteUserResult, RoleOption } from "../lib/api";
-import { dateTime, humanise } from "../lib/format";
+import { dateTime } from "../lib/format";
 import { ErrorState, NoteBar, PageHeader, TableSkeleton } from "../components/ui";
 
 const CUSTOMER_ROLE_CODE = "customer";
@@ -151,7 +152,9 @@ export default function AdminUsersList() {
             Nobody but the invitee ever sets their password — you send them a one-time link, and
             they choose it themselves when they open it. This is also how a portal (customer)
             login gets created: it must always be linked to one specific customer, which a
-            self-service signup could never safely be trusted to pick for itself.
+            self-service signup could never safely be trusted to pick for itself. Adding a new
+            company to quote for — with or without a portal login — can also be done on the{" "}
+            <Link to="/admin/customers">Customers</Link> screen.
           </p>
 
           <div className="row" style={{ gap: "var(--space-3)", flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -309,36 +312,6 @@ export default function AdminUsersList() {
                       ) : (
                         <span className="badge badge--warning">Invited — not yet activated</span>
                       )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="card">
-          <h2 className="card__title">Customers</h2>
-          <div className="table-wrap">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Code</th>
-                  <th>Tier</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {customers.map((c) => (
-                  <tr key={c.id}>
-                    <td className="primary-cell">{c.name}</td>
-                    <td className="sub-cell">{c.code}</td>
-                    <td>{humanise(c.tier)}</td>
-                    <td>
-                      <span className={`badge badge--${c.is_active ? "success" : "neutral"}`}>
-                        {c.is_active ? "Active" : "Archived"}
-                      </span>
                     </td>
                   </tr>
                 ))}

@@ -36,6 +36,7 @@ import AdminDiscountTiers from "./screens/AdminDiscountTiers";
 import AdminProductsList from "./screens/AdminProductsList";
 import AdminProductDetail from "./screens/AdminProductDetail";
 import AdminUsersList from "./screens/AdminUsersList";
+import AdminCustomersList from "./screens/AdminCustomersList";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -80,6 +81,7 @@ export default function App() {
             <Route path="/admin/products" element={<AdminProductsList />} />
             <Route path="/admin/products/:id" element={<AdminProductDetail />} />
             <Route path="/admin/users" element={<AdminUsersList />} />
+            <Route path="/admin/customers" element={<AdminCustomersList />} />
           </Route>
 
           <Route element={<PortalShell />}>

@@ -705,3 +705,45 @@ export interface ReportFilters {
   status?: string;
   category_id?: number;
 }
+
+// --- Admin: customers & users/invitations (PRD A1, A4) ---------------------
+
+export interface AdminCustomer {
+  id: number;
+  code: string;
+  name: string;
+  tier: string;
+  currency: string;
+  email: string | null;
+  phone: string | null;
+  is_active: boolean;
+}
+
+export interface AdminUser {
+  id: number;
+  email: string;
+  full_name: string;
+  role_id: number;
+  role_code: string;
+  role_name: string;
+  customer_id: number | null;
+  customer_name: string | null;
+  is_active: boolean;
+  has_password: boolean;
+}
+
+export interface InviteUserResult {
+  user: AdminUser;
+  invite_url: string;
+  expires_at: string;
+}
+
+export interface InvitationPreview {
+  email: string;
+  full_name: string;
+  role_name: string;
+  customer_name: string | null;
+  expires_at: string;
+  already_accepted: boolean;
+  is_expired: boolean;
+}

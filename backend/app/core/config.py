@@ -62,6 +62,14 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:5173"]
     )
 
+    # --- Invitations ---------------------------------------------------------
+    # Used only to build the activation link returned by
+    # `POST /admin/users/invite` (`/activate/<token>` on the SPA router).
+    # There is no email infrastructure in this project (see
+    # PROJECT_CONTEXT.md) - the link is handed back to the Admin to copy and
+    # send however they already reach the invitee.
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

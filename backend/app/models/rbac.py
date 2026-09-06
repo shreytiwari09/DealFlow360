@@ -109,7 +109,14 @@ class User(IdMixin, AuditMixin, ArchivableMixin, Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     # Argon2/bcrypt digest, never the password. Populated in Phase 6.
     # Never exposed through a response DTO (SECURITY_SPEC.md Section 6).
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    #
+    # Nullable: an Admin-invited user (see `models/auth.py::UserInvitation`)
+    # exists as a row before they have chosen a password at all. `is_active`
+    # is set False for that row, which already blocks login on its own
+    # (`services/auth.py::authenticate`) - the null hash is a second,
+    # structural guarantee that a not-yet-activated account has no password
+    # to guess, not merely a disabled one.
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(160), nullable=False)
 
     role_id: Mapped[int] = mapped_column(

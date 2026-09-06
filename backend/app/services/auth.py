@@ -65,7 +65,7 @@ async def _load_user(session: AsyncSession, user_id: int) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def _issue_pair(session: AsyncSession, user: User) -> TokenPair:
+async def issue_token_pair(session: AsyncSession, user: User) -> TokenPair:
     refresh_token, jti, expires_at = create_refresh_token(user.id)
     session.add(
         RefreshToken(
@@ -115,7 +115,7 @@ async def signup(
 
     loaded = await _load_user(session, user.id)
     assert loaded is not None  # just inserted in this same transaction
-    return loaded, await _issue_pair(session, loaded)
+    return loaded, await issue_token_pair(session, loaded)
 
 
 async def authenticate(session: AsyncSession, email: str, password: str) -> tuple[User, TokenPair]:
@@ -132,7 +132,13 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> tupl
     )
     user = result.scalar_one_or_none()
 
-    if user is None:
+    if user is None or user.password_hash is None:
+        # `password_hash is None` is an Admin-invited account that has not
+        # accepted its invitation yet - it has no password to check, so it
+        # must fail exactly like "no such user" rather than its own distinct
+        # error. A different message here ("this account is not yet
+        # activated") would let an attacker enumerate pending invitations by
+        # email.
         verify_password(password, hash_password("timing-equalisation-only"))
         raise AuthError
 
@@ -147,7 +153,7 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> tupl
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
 
-    return user, await _issue_pair(session, user)
+    return user, await issue_token_pair(session, user)
 
 
 async def rotate_refresh_token(session: AsyncSession, token: str) -> tuple[User, TokenPair]:
@@ -184,7 +190,7 @@ async def rotate_refresh_token(session: AsyncSession, token: str) -> tuple[User,
     if user is None or not user.is_active:
         raise AuthError
 
-    pair = await _issue_pair(session, user)
+    pair = await issue_token_pair(session, user)
     stored.revoked_at = now
     # Record the successor so the chain is auditable after the fact.
     stored.replaced_by_hash = _hash_jti(decode_token(pair.refresh_token, expect="refresh").jti)

@@ -711,3 +711,83 @@ class ReportResponse(BaseModel):
     total_amount: Decimal
     total_discount: Decimal
     count: int
+
+
+# --- Admin: customers (PRD A4 continuation) ---------------------------------
+
+
+class CreateCustomerRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=200)
+    tier: str
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=40)
+    billing_address: str | None = Field(default=None, max_length=500)
+
+
+class AdminCustomerResponse(ORMModel):
+    id: int
+    code: str
+    name: str
+    tier: str
+    currency: str
+    email: str | None
+    phone: str | None
+    is_active: bool
+
+
+# --- Admin: users & invitations (PRD A1, A4) --------------------------------
+#
+# There is no `PATCH /admin/users/{id}/role` — an Admin provisioning the
+# right role directly through an invitation (below) is the realistic ERP
+# pattern this replaces, not a gap it still needs filling. See
+# `services/invitation.py`'s module docstring.
+
+
+class AdminUserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    role_id: int
+    role_code: str
+    role_name: str
+    customer_id: int | None
+    customer_name: str | None
+    is_active: bool
+    # False for an invitation that has not yet been accepted — the account
+    # exists but has never had a password set.
+    has_password: bool
+
+
+class InviteUserRequest(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=160)
+    role_id: int
+    # Required by the service when, and only when, `role_id` resolves to the
+    # customer role — validated there, not here, since that depends on a
+    # database lookup this schema cannot perform.
+    customer_id: int | None = None
+
+
+class InviteUserResponse(BaseModel):
+    user: AdminUserResponse
+    # No email infrastructure exists in this project (PROJECT_CONTEXT.md) —
+    # the activation link is handed straight back to the Admin to copy and
+    # send however they already reach this person, the same "copy this link"
+    # shape as a Google Doc share link or a Slack invite.
+    invite_url: str
+    expires_at: datetime
+
+
+class InvitationPreviewResponse(BaseModel):
+    email: str
+    full_name: str
+    role_name: str
+    customer_name: str | None
+    expires_at: datetime
+    already_accepted: bool
+    is_expired: bool
+
+
+class AcceptInvitationRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=200)

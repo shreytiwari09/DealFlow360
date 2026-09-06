@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     portal,
     quotations,
     reports,
+    users,
 )
 
 api_router = APIRouter()
@@ -30,3 +31,4 @@ api_router.include_router(portal.router)
 api_router.include_router(admin.router)
 api_router.include_router(dealhealth.router)
 api_router.include_router(reports.router)
+api_router.include_router(users.router)

@@ -16,6 +16,7 @@ import InternalShell from "./layouts/InternalShell";
 import PortalShell from "./layouts/PortalShell";
 import Login from "./screens/Login";
 import Register from "./screens/Register";
+import AcceptInvitation from "./screens/AcceptInvitation";
 import Dashboard from "./screens/Dashboard";
 import QuotationsList from "./screens/QuotationsList";
 import QuotationDetail from "./screens/QuotationDetail";
@@ -34,6 +35,7 @@ import ReportsScreen from "./screens/ReportsScreen";
 import AdminDiscountTiers from "./screens/AdminDiscountTiers";
 import AdminProductsList from "./screens/AdminProductsList";
 import AdminProductDetail from "./screens/AdminProductDetail";
+import AdminUsersList from "./screens/AdminUsersList";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -54,6 +56,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginRoute />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/activate/:token" element={<AcceptInvitation />} />
           {/* A customer landing on the bare /portal (an old bookmark, or the
               redirect above) goes straight to their list — there is no
               standalone /portal screen of its own. */}
@@ -76,6 +79,7 @@ export default function App() {
             <Route path="/admin/discount-tiers" element={<AdminDiscountTiers />} />
             <Route path="/admin/products" element={<AdminProductsList />} />
             <Route path="/admin/products/:id" element={<AdminProductDetail />} />
+            <Route path="/admin/users" element={<AdminUsersList />} />
           </Route>
 
           <Route element={<PortalShell />}>

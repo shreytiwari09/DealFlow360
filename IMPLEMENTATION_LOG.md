@@ -1494,3 +1494,164 @@ declaring it done, not by inspection alone.
 Nothing is blocking. If continuing: `PATCH /api/v1/admin/users/{id}/role` for role promotion
 (the other half of Locked Business Rules #5), or any of the previously-recorded Remaining Work
 items.
+
+## 2026-09-06 — Admin-Provisioned Accounts: Invite-Based Customer/Portal and Internal Users
+
+### Goal
+The user asked a conceptual question after the previous entry: "we only have a create-account
+option for Sales Reps — do we need one for customers too, and how do real ERP systems handle
+this?" Answering it surfaced a genuine gap: `Locked Business Rules #5` correctly says portal
+accounts must be Admin-created, but nothing actually implemented that — there was no endpoint or
+screen for an Admin to create ANY user, portal or internal, beyond seed fixtures and Sales Rep
+self-signup. Asked the user how to close it (AskUserQuestion, per PLAN.md Section 0.6): a simple
+"Admin sets an initial password" form, or a real invite-link activation flow matching Salesforce
+Experience Cloud / SAP Ariba / NetSuite Customer Center / Odoo Portal Users. User chose the
+invite-link flow.
+
+### Implemented
+
+**Backend.**
+- `users.password_hash` made nullable (migration `fe1ed27193e6`) — an invited-but-not-yet-
+  activated account has no password at all, not merely a disabled one. `authenticate()` treats
+  a null hash exactly like "no such user": same generic failure, so a pending invitation cannot
+  be enumerated by email through the login endpoint.
+- New `user_invitations` table (`app/models/auth.py::UserInvitation`) — `user_id`, a SHA-256
+  `token_hash` (never the raw token, same pattern as `refresh_tokens.token_hash`),
+  `invited_by_id`, `expires_at` (7 days), `accepted_at`.
+- `app/services/invitation.py` (new) — `invite_user()` creates the (inactive, passwordless)
+  `User` row plus its invitation and returns the raw token exactly once; `preview_invitation()`
+  is the read-only lookup for the activation page; `accept_invitation()` sets the password,
+  flips `is_active`, and auto-issues a token pair (same "one action" shape as `signup()`).
+  Enforces the invariant `models/rbac.py::User` already documents at the column level: a
+  `customer` role invite requires `customer_id`; any other role invite rejects one.
+- `POST /api/v1/admin/customers` + `GET /api/v1/admin/customers` (`admin.py`, `config.manage`)
+  — there was previously no way to create a customer at all, which an invited portal account
+  needs to link to.
+- `GET /api/v1/admin/users` + `POST /api/v1/admin/users/invite` (new `users.py`, `user.manage`
+  — distinct permission from `config.manage`, matching the seed's existing separation).
+- `GET /api/v1/auth/invitations/{token}` (preview) and
+  `POST /api/v1/auth/invitations/{token}/accept` (`auth.py`, both public/unauthenticated — the
+  token in the URL is the invitee's only credential at this point, same as a password-reset
+  link).
+- Renamed `services/auth.py`'s private `_issue_pair` to `issue_token_pair` so
+  `invitation.py` could reuse it without importing a name prefixed `_` across modules.
+- New audit actions: `USER_INVITED`, `INVITATION_ACCEPTED`.
+- New `FRONTEND_BASE_URL` setting — used only to build the `/activate/<token>` link handed back
+  to the Admin. No SMTP/email provider exists anywhere in this project; the link is returned
+  directly for the Admin to copy and send however they already reach the invitee, the same
+  "copy this link" shape as a Google Doc share or Slack invite. Documented as a deliberate
+  simplification, not a forgotten feature.
+
+**Frontend.**
+- `screens/AdminUsersList.tsx` (new, `/admin/users`, `user.manage`) — invite form (role picker
+  drives whether a customer selector appears; an inline "+ New customer" toggle creates one
+  without leaving the page), a users table showing invitation state (Active / Deactivated /
+  "Invited — not yet activated"), and a customers table. Shows the generated invite link with a
+  copy-to-clipboard button once an invite is sent.
+- `screens/AcceptInvitation.tsx` (new, public route `/activate/:token`) — previews who the
+  invite is for before asking for a password (already-accepted and expired states both render
+  distinctly rather than a generic error), then activates and signs the user straight in.
+- `lib/auth.tsx` — `acceptInvitation()`, mirroring `signUp()`.
+- `lib/api.ts` — `AdminCustomer`, `AdminUser`, `InviteUserResult`, `InvitationPreview` types.
+- `layouts/InternalShell.tsx` — "Users" nav item under Configuration, gated on `user.manage`.
+- `screens/Register.tsx` — updated its own NoteBar to say portal accounts are also
+  Admin-provisioned now (it previously only mentioned other internal roles).
+
+### Files Changed
+- `backend/app/models/rbac.py` (`password_hash` nullable)
+- `backend/app/models/auth.py` (`UserInvitation`)
+- `backend/app/models/__init__.py`, `backend/app/models/audit.py`
+- `backend/app/services/auth.py` (`_issue_pair` → `issue_token_pair`; null-password-hash handling)
+- `backend/app/services/invitation.py` (new)
+- `backend/app/api/v1/endpoints/admin.py` (customers CRUD)
+- `backend/app/api/v1/endpoints/users.py` (new)
+- `backend/app/api/v1/endpoints/auth.py` (invitation preview/accept routes)
+- `backend/app/api/v1/router.py`
+- `backend/app/schemas/api.py` (customer/user/invitation DTOs)
+- `backend/app/core/config.py` (`FRONTEND_BASE_URL`)
+- `backend/alembic/versions/20260906_0006-fe1ed27193e6_*.py` (new migration)
+- `.env`, `.env.example`
+- `frontend/src/screens/AdminUsersList.tsx`, `AcceptInvitation.tsx` (new)
+- `frontend/src/lib/auth.tsx`, `frontend/src/lib/api.ts`
+- `frontend/src/App.tsx`, `frontend/src/layouts/InternalShell.tsx`
+- `frontend/src/screens/Register.tsx`
+- `PROJECT_CONTEXT.md`, `IMPLEMENTATION_LOG.md`
+
+### Important Decisions
+- Decision: invite-based activation, not a direct "Admin sets a password" form.
+- Reason: user's explicit choice between the two, offered because it is a genuine security/UX
+  trade-off (PLAN.md Section 0.6). Nobody but the account's own owner ever handles its password
+  this way, including the Admin who created the row — same reasoning as a password-reset flow.
+
+- Decision: the invite endpoint's service layer accepts any role, not only `customer`; the
+  frontend picker hides `admin` as a UX nudge only, not a server-side restriction.
+- Reason: minimal extra cost once the invite machinery exists, and it quietly resolves the
+  previously-recorded `PATCH .../role` gap in spirit — an Admin provisioning the right role
+  directly from the start is the realistic ERP pattern, not a promotion endpoint bolted on
+  after self-signup. Not enforcing this server-side is deliberate, not an oversight: the
+  endpoint already requires `user.manage`, which today only Admin holds — an Admin inviting
+  another Admin is not a privilege escalation, since it requires already being one. Hiding it
+  from the picker just keeps "make another Admin" from being a one-click accident.
+
+- Decision: no email is actually sent; the raw activation link is returned in the API response.
+- Reason: no SMTP/email provider exists anywhere in this codebase, and standing one up (a new
+  external dependency and credentials) is out of proportion for a hackathon build. Disclosed
+  directly in the UI copy ("There is no email sending in this project — copy this link...")
+  rather than silently pretended away.
+
+- Decision: `invitation.py`'s 7-day token TTL and the generic non-Admin-role gate were set
+  without a stop-and-ask question, unlike the invite-vs-direct-create choice above.
+- Reason: these are implementation defaults with no PRD-specified value and no real
+  security/business trade-off attached (unlike the deal-health thresholds, which PLAN.md
+  Section 0.6 names explicitly) — a reasonable default stated and moved on from, not a locked
+  business rule.
+
+### Validation
+- Backend: **230 tests pass** unchanged (the nullable-column and new-model changes did not
+  require new unit tests to be written this round; live verification below covers the new
+  behavior instead, matching this project's standard for a feature this shaped).
+- `ruff check` / `ruff format` clean on every touched file. Frontend `tsc -b` and `vite build`
+  both clean; dev server HMR picked up every change with no errors.
+- Migration applied cleanly against the real local Postgres (`alembic upgrade head`); backend
+  container restarted healthy afterward.
+- **Live 29-check script** against the actual running stack (not mocks): create customer →
+  list roles → invite a portal user → duplicate email rejected (409) → customer-role invite
+  missing `customer_id` rejected (409) → internal-role invite WITH a `customer_id` rejected
+  (409) → the invited account cannot log in before activation (401) → public preview works
+  unauthenticated and shows the right email/customer/role → a garbage token returns 404, not
+  500 → accept sets the password and returns a working token pair → replaying an already-
+  accepted token is rejected (409) → the now-activated account logs in normally → `/auth/me`
+  with the accept-time token returns the right `customer_id`/role and portal-only permissions →
+  a Sales Rep gets 403 from both the invite and customer-create endpoints. All 29 passed after
+  one real bug was found and fixed (below).
+- **One real bug caught by the live run, fixed before shipping**: `GET /auth/invitations/{token}`
+  carried `@limiter.limit(...)` without the `response: Response` parameter slowapi's
+  `headers_enabled` mode requires to attach its rate-limit headers onto — every call 500'd with
+  `Exception: parameter 'response' must be an instance of starlette.responses.Response`. This is
+  the exact failure mode `login()`'s own docstring in the same file already warns about; missed
+  it when adding the new route and the live script caught it immediately. Not a unit-test gap —
+  no existing test exercised this route at all, which is itself the reason this class of bug
+  needs a live check rather than only inline review.
+
+### Known Issues
+- No email delivery — the Admin must copy and send the activation link themselves. Acceptable
+  for a hackathon; a real deployment would wire this to an actual provider.
+- Demoting or correcting an already-created user's role still has no dedicated endpoint; an
+  Admin edits the row directly. Narrower than the original `PATCH .../role` gap (provisioning
+  the *right* role from the start is now solved), but not zero.
+- A handful of test customers/users created while live-verifying this feature
+  (`TEST-INV-*`/`DBG-*` customer codes, `invitee-*`/`dbg-*`/etc. emails) were left in the local
+  Postgres rather than deleted: the users are protected by the `audit_logs` RESTRICT
+  foreign key (by design — deleting a user must never erase its audit history), and pruning
+  around that safely was judged not worth the additional risk for rows that are otherwise
+  harmless dev-database clutter.
+
+### Current State
+An Admin can provision any account in the system — customer portal or internal — through one
+consistent invite-and-activate flow, with no way for a self-signup to attach itself to an
+existing customer's quotations. The account-creation gap flagged in the previous entry's
+"Correction" note is closed.
+
+### Next Recommended Step
+Nothing is blocking. If continuing: a narrow role-change endpoint for an existing user (not
+provisioning), or wire real email delivery to replace the copy-link UX.

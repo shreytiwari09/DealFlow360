@@ -30,13 +30,16 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import SessionDep, require_permission
 from app.models.audit import AuditAction
 from app.models.catalog import Product, ProductCategory
-from app.models.enums import ItemType
+from app.models.customer import Customer
+from app.models.enums import CustomerTier, ItemType
 from app.models.policy import ApprovalChain, DiscountTier
 from app.models.rbac import Role, User
 from app.schemas.api import (
+    AdminCustomerResponse,
     AdminProductResponse,
     ApprovalChainResponse,
     CreateApprovalChainRequest,
+    CreateCustomerRequest,
     CreateDiscountTierRequest,
     CreateProductCategoryRequest,
     CreateProductRequest,
@@ -520,3 +523,75 @@ async def update_product(
     await session.commit()
     await session.refresh(product, attribute_names=["category"])
     return _product_response(product)
+
+
+# --- Customers ----------------------------------------------------------------
+#
+# `GET /customers` (catalog.py) already lists active customers for the
+# quotation builder's picker; this adds the write side and the archived-
+# inclusive read Admin needs, on the same `config.manage` gate as the other
+# master data in this file. Creating a customer here is the prerequisite for
+# `POST /admin/users/invite` (users.py) to link a portal account to one.
+
+
+def _customer_response(customer: Customer) -> AdminCustomerResponse:
+    return AdminCustomerResponse(
+        id=customer.id,
+        code=customer.code,
+        name=customer.name,
+        tier=customer.tier,
+        currency=customer.currency,
+        email=customer.email,
+        phone=customer.phone,
+        is_active=customer.is_active,
+    )
+
+
+@router.get("/customers", response_model=list[AdminCustomerResponse])
+async def list_admin_customers(
+    session: SessionDep, user: CanConfigure
+) -> list[AdminCustomerResponse]:
+    rows = (await session.execute(select(Customer).order_by(Customer.name))).scalars().all()
+    return [_customer_response(c) for c in rows]
+
+
+@router.post(
+    "/customers", response_model=AdminCustomerResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_customer(
+    request: Request, payload: CreateCustomerRequest, session: SessionDep, user: CanConfigure
+) -> AdminCustomerResponse:
+    try:
+        tier = CustomerTier(payload.tier)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Unknown customer tier.") from None
+
+    existing = (
+        await session.execute(select(Customer).where(Customer.code == payload.code))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="A customer with this code already exists.")
+
+    customer = Customer(
+        code=payload.code,
+        name=payload.name,
+        tier=tier,
+        email=payload.email,
+        phone=payload.phone,
+        billing_address=payload.billing_address,
+        created_by=user.id,
+    )
+    session.add(customer)
+    await session.flush()
+
+    await audit.record(
+        session,
+        action=AuditAction.CONFIG_CHANGED,
+        user_id=user.id,
+        resource="customer",
+        resource_id=customer.id,
+        reason=f"created customer '{payload.name}' ({payload.code})",
+        request=request,
+    )
+    await session.commit()
+    return _customer_response(customer)

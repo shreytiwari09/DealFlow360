@@ -408,6 +408,45 @@ ignores client-supplied `customer_id` by the rule above). Portal accounts are th
 created by an Admin. This is the correct outcome: self-signup must never be able to attach
 itself to an existing customer's quotations.
 
+> **Correction (2026-09-06, part 2).** The paragraph above was right that portal accounts must
+> be Admin-created, but until now nothing actually implemented that — there was no endpoint or
+> screen for an Admin to create ANY user at all, portal or internal, beyond the seed fixtures
+> and the signup path above. Found when the user asked, correctly, "do we need an option to
+> create a customer account, and how do real ERPs do this?"
+>
+> Built as an **invite-based activation flow**, not a direct "Admin sets the password" form —
+> the same shape as a password-reset link, and the same reason: nobody but the account's own
+> owner should ever handle its password, including the Admin who created the row. An Admin
+> calls `POST /api/v1/admin/users/invite` (`user.manage`) with an email, name, role, and — only
+> when the role is `customer` — a `customer_id` (`POST /api/v1/admin/customers`, `config.manage`,
+> now exists too, since there was previously no way to create a customer either). This creates
+> the `users` row with `password_hash = NULL` and `is_active = false` (both now enforced at the
+> service layer: `password_hash` is nullable on the column, and `authenticate()` treats a null
+> hash exactly like "no such user" — same generic failure, so a pending invitation cannot be
+> enumerated by email through the login endpoint) and a `user_invitations` row holding only a
+> SHA-256 hash of a one-time token — same pattern as `refresh_tokens.token_hash`. The Admin
+> receives the raw activation link back in the response (`/activate/<token>` on the SPA) and
+> sends it to the invitee however they already reach them; `GET /api/v1/auth/invitations/{token}`
+> (public, generic-failure on a bad/expired/used token) lets the activation page greet them by
+> name, and `POST /api/v1/auth/invitations/{token}/accept` sets their password, flips
+> `is_active`, and logs them straight in — same "one action, not two" shape as `signup()`.
+>
+> This also quietly resolves the `PATCH .../role` gap noted just above: an Admin provisioning
+> the *right* role directly through this same invite endpoint (Sales Manager, Finance/Ops,
+> whatever is actually needed) is the more realistic ERP pattern, not a promotion endpoint
+> bolted on after the fact. No email delivery exists in this project (no SMTP/provider
+> configured anywhere) — the "send it yourself" copy-link UX is a deliberate, disclosed
+> simplification, the same trade-off a Google Doc share link or Slack invite link makes.
+> Verified live against the running stack (not just unit-tested): 29 checks covering create
+> customer → invite portal user → duplicate-email rejected → mismatched role/customer
+> combinations rejected → login blocked before activation → public preview → accept → replay
+> rejected → activated login works and is correctly permission-scoped → a non-Admin cannot call
+> either endpoint. One real bug caught by that live run and fixed before shipping: the new
+> `GET /auth/invitations/{token}` route carried `@limiter.limit(...)` without the `response:
+> Response` parameter slowapi requires to attach its rate-limit headers, which 500'd every call
+> — the exact failure mode `login()`'s own docstring already warned about for this same library
+> quirk.
+
 > **Documented limitation, deliberately accepted for the hackathon.** Unrestricted public
 > signup means anyone can obtain a `sales_rep` account and reach the internal workspace — an
 > empty one (they own no quotations, and ownership checks are enforced server-side), but they
@@ -888,9 +927,12 @@ these optional) and the items below remain.
   2026-09-06 for the deep-link-in-a-new-tab bug the localStorage fallback fixes on top of it).
   SECURITY_SPEC Section 7 prefers cookies and that remains the right end state; it needs CSRF
   handling and a same-site story the split localhost origins do not currently allow
-- **`PATCH /api/v1/admin/users/{id}/role`** — Locked Business Rules #5 always intended this
-  alongside signup (promoting a self-registered Sales Rep to another role); not built this
-  round. An Admin can edit the row directly in the meantime
+- **`PATCH /api/v1/admin/users/{id}/role`** — superseded, not merely deferred. Locked Business
+  Rules #5 originally intended this for promoting a self-registered Sales Rep, but
+  `POST /admin/users/invite` (2026-09-06, part 2) now lets an Admin provision a user straight
+  into the right role from the start, which is the pattern real ERPs actually use. A dedicated
+  role-change endpoint for an *existing* user (demotion, or correcting a mis-provisioned role)
+  is still genuinely absent — an Admin edits the row directly for that narrower case
 - **Fully-automatic backorder consolidation** — PRD B6's "prompt appears automatically" needs a
   background job watching for restocks. What exists now (`POST
   /fulfillment/{id}/backorders/{id}/consolidate`) is the manual trigger that prompt would call;

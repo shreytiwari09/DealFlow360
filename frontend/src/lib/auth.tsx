@@ -16,6 +16,7 @@ interface AuthState {
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, fullName: string) => Promise<void>;
+  acceptInvitation: (token: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   can: (permission: string) => boolean;
 }
@@ -73,6 +74,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(await api.get<CurrentUser>("/auth/me"));
   }, []);
 
+  /**
+   * The activation half of an Admin-issued invite (`services/invitation.py`).
+   * Same shape as `signUp`: proving ownership of the link IS the credential,
+   * so setting a password logs the invitee straight in rather than sending
+   * them to /login a second time.
+   */
+  const acceptInvitation = useCallback(async (token: string, password: string) => {
+    const tokens = await api.post<TokenResponse>(`/auth/invitations/${token}/accept`, {
+      password,
+    });
+    setTokens(tokens.access_token, tokens.refresh_token);
+    setUser(await api.get<CurrentUser>("/auth/me"));
+  }, []);
+
   const signOut = useCallback(async () => {
     const refresh = getRefreshToken();
     try {
@@ -90,10 +105,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       signIn,
       signUp,
+      acceptInvitation,
       signOut,
       can: (permission: string) => user?.permissions.includes(permission) ?? false,
     }),
-    [user, loading, signIn, signUp, signOut],
+    [user, loading, signIn, signUp, acceptInvitation, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

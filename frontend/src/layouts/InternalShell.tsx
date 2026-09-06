@@ -36,6 +36,7 @@ const NAV: NavEntry[] = [
     permission: "config.manage",
   },
   { to: "/admin/products", label: "Product Catalog", permission: "config.manage" },
+  { to: "/admin/users", label: "Users", permission: "user.manage" },
 ];
 
 export default function InternalShell() {

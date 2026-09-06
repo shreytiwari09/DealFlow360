@@ -127,8 +127,9 @@ export default function Register() {
 
         <div style={{ marginTop: "var(--space-4)" }}>
           <NoteBar>
-            New accounts are always Sales Reps — that's the only self-service role. A Sales
-            Manager, Finance/Ops or Admin account is created for you by an Admin.
+            New accounts here are always Sales Reps — that's the only self-service role. A Sales
+            Manager, Finance/Ops or Admin account, and every customer portal login, is created
+            for you by an Admin, who sends you a one-time activation link.
           </NoteBar>
         </div>
 

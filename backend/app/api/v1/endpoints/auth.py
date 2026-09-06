@@ -19,7 +19,9 @@ from app.api.deps import CurrentUser, SessionDep, user_permissions
 from app.core.rate_limit import limiter
 from app.models.audit import AuditAction
 from app.schemas.api import (
+    AcceptInvitationRequest,
     CurrentUserResponse,
+    InvitationPreviewResponse,
     LoginRequest,
     RefreshRequest,
     SignupRequest,
@@ -34,6 +36,7 @@ from app.services.auth import (
     rotate_refresh_token,
 )
 from app.services.auth import signup as signup_user  # avoids shadowing the endpoint below
+from app.services.invitation import InvitationError, accept_invitation, preview_invitation
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -169,3 +172,65 @@ async def me(user: CurrentUser) -> CurrentUserResponse:
         customer_id=user.customer_id,
         customer_name=user.customer.name if user.customer else None,
     )
+
+
+# --- Invitations -------------------------------------------------------------
+#
+# The activation half of `POST /admin/users/invite` (users.py). Both routes
+# below are unauthenticated on purpose: the invitee has no account they can
+# log in with yet — the token in the URL IS their credential, exactly like a
+# password-reset link.
+
+
+@router.get("/invitations/{token}", response_model=InvitationPreviewResponse)
+@limiter.limit("20/minute")
+async def preview_invite(
+    request: Request, response: Response, token: str, session: SessionDep
+) -> InvitationPreviewResponse:
+    """Lets the activation page greet the invitee by name before asking them
+    to set a password, without requiring a second round trip once they
+    submit. Read-only: looking this up accepts nothing.
+
+    `response` is required by slowapi, same as every other rate-limited route
+    in this file — see `login()`'s docstring above."""
+    try:
+        preview = await preview_invitation(session, token)
+    except InvitationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from None
+    return InvitationPreviewResponse(
+        email=preview.email,
+        full_name=preview.full_name,
+        role_name=preview.role_name,
+        customer_name=preview.customer_name,
+        expires_at=preview.expires_at,
+        already_accepted=preview.already_accepted,
+        is_expired=preview.is_expired,
+    )
+
+
+@router.post("/invitations/{token}/accept", response_model=TokenResponse)
+@limiter.limit("5/minute")
+async def accept_invite(
+    request: Request,
+    response: Response,
+    token: str,
+    payload: AcceptInvitationRequest,
+    session: SessionDep,
+) -> TokenResponse:
+    try:
+        user, tokens = await accept_invitation(session, token=token, password=payload.password)
+    except InvitationError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+
+    await audit.record(
+        session,
+        action=AuditAction.INVITATION_ACCEPTED,
+        user_id=user.id,
+        resource="auth",
+        resource_id=user.id,
+        reason=f"activated invited account {user.email}",
+        request=request,
+    )
+    await session.commit()
+    return TokenResponse(**tokens.__dict__)

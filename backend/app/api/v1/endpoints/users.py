@@ -16,6 +16,7 @@ rather than a direct "set their password" form.
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -38,6 +39,8 @@ from app.services.invitation import InvitationError, invite_user
 from app.services.mailer import MailError, send_invitation_email
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+logger = logging.getLogger(__name__)
 
 CanManageUsers = Annotated[User, Depends(require_permission("user.manage"))]
 
@@ -121,7 +124,12 @@ async def invite(
             invite_url=invite_url,
             role_name=invited.role.name,
         )
-    except MailError:
+    except MailError as exc:
+        # `email_sent: false` in the response is enough for the Admin looking
+        # at THIS screen right now, but an outage affecting every invite for
+        # a while needs to be visible to whoever is watching logs, not only
+        # discoverable one API response at a time.
+        logger.warning("Invitation email to %s failed: %s", invited.email, exc)
         email_sent = False
 
     return InviteUserResponse(

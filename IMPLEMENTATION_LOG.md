@@ -1990,3 +1990,130 @@ accurate source of truth instead.
 ### Next Recommended Step
 Nothing is blocking. The two remaining scheduler-shaped gaps (automatic backorder consolidation,
 automatic subscription renewal) are the largest genuinely-deferred items left, if continuing.
+
+## 2026-09-06 — Full Browser Walkthrough Finds and Fixes Two Real Cookie-Auth Bugs
+
+### Goal
+The user asked for every feature to be manually clicked through in the real frontend, not just
+verified via API scripts — a step this project had not done for the cookie-auth migration two
+entries above. Installed Playwright + Chromium locally (no project skill existed for driving
+this app; none of `chromium-cli` etc. were available in this environment) and drove the actual
+running app end to end: login/logout/registration, quotation building with an over-limit
+discount, upsell, manager+finance approval, fulfillment split, subscriptions/proration, deal
+health, reports export, all four admin config screens, the full invite→email→activate→role-
+change chain, portal negotiation (both sides), and quotation reassignment.
+
+### Implemented — two real bugs, both invisible to every prior verification method
+
+**1. Session did not survive a page reload — the cookie migration's central promise, broken.**
+Logging in worked; reloading the page immediately bounced back to `/login` despite a perfectly
+valid refresh cookie. Root cause: `core/cookies.py` scoped BOTH the `refresh_token` cookie and
+the `csrf_token` cookie to `Path=/api/v1/auth`. That path scoping is correct for the refresh
+cookie (a REQUEST to `/auth/refresh` is under that path, so the browser attaches it regardless
+of which frontend route triggered the call) but wrong for the CSRF cookie, which the frontend
+reads via `document.cookie` — and `document.cookie` path-matching is evaluated against the
+CURRENT PAGE's path (`/dashboard`, `/quotations/12`, anything - never `/api/v1/auth`, which is
+a backend-only namespace the frontend SPA never lives under). The CSRF cookie was therefore
+invisible to the frontend on every single page except literally the auth pages themselves -
+nowhere a real browser tab is ever actually sitting. `getCsrfToken()` always returned empty,
+every `/auth/refresh` call failed its CSRF check, and `resume()` treated that as "no session."
+Fixed by giving the CSRF cookie `Path=/` while leaving the refresh cookie's path unchanged - the
+two cookies have different consumers (a browser's automatic request-attachment vs. a page's
+own `document.cookie`) and needed different scopes for that reason, not the same one.
+
+This is exactly the class of bug the live cookie/CSRF verification in the previous entry could
+not have caught: that verification used a cookie-jar-aware HTTP client (Python `requests`),
+which has no concept of "the page you are currently on" at all - it holds every cookie
+regardless of path and was never going to reproduce a `document.cookie` path-matching failure.
+Only actually loading the page in a browser and reloading it exposed this.
+
+**2. React StrictMode's double-invoked mount effect self-destroyed the session.** Even after
+fix #1, a reload sometimes still failed. `AuthProvider`'s `resume()` effect ran twice on mount
+(React 18 `StrictMode` deliberately double-invokes effects in development to surface exactly
+this class of bug), firing two concurrent `GET /auth/me` calls, both 401ing, both independently
+triggering `POST /auth/refresh` against the SAME refresh cookie. `rotate_refresh_token` revokes
+a token the instant it successfully rotates it - so the second, genuinely-concurrent call was
+indistinguishable server-side from an attacker replaying an already-used token, and correctly
+(per that code's own logic) revoked the WHOLE token family as reuse detection is designed to
+do, killing the session the first call had just legitimately renewed. Not a StrictMode-only
+concern either: with the refresh cookie now shared across a browser's tabs (the entire point of
+the cookie migration), two real tabs refreshing within the same race window would hit the exact
+same failure. Fixed with a same-tab single-flight guard in `lib/api.ts`: at most one
+`/auth/refresh` request in flight at a time; concurrent callers await the same promise instead
+of starting a second fetch. This deterministically fixes the StrictMode case and substantially
+narrows (though does not fully eliminate) the cross-tab case, which now requires two separate
+tabs' refresh attempts to land within the same network round-trip rather than being guaranteed.
+
+### Files Changed
+- `backend/app/core/cookies.py` (`CSRF_COOKIE_PATH = "/"`, separate from
+  `REFRESH_COOKIE_PATH = "/api/v1/auth"`; docstring rewritten to explain why the split exists)
+- `frontend/src/lib/api.ts` (`pendingRefresh` single-flight guard around `refreshAccessToken()`)
+
+### Important Decisions
+- Decision: the two cookies get different `Path` values instead of a single shared constant.
+- Reason: they have different consumers with different path-matching semantics - a browser
+  matches a cookie's Path against the REQUEST's target path when deciding whether to attach it
+  automatically, but matches it against the CURRENT PAGE's path when deciding whether
+  `document.cookie` exposes it. The refresh cookie only ever needs the first property; the CSRF
+  cookie only ever needs the second. One Path value cannot correctly serve both needs at once
+  here, since the frontend's pages and the backend's auth routes live under entirely different
+  path prefixes.
+
+- Decision: a same-tab single-flight guard, not a distributed cross-tab lock (e.g. via
+  `BroadcastChannel` or a `navigator.locks` mutex).
+- Reason: the single-flight guard fully and deterministically fixes the StrictMode race (the
+  actual reproducing case) with a few lines of client-only code. A real cross-tab mutex is a
+  materially bigger piece of engineering for a residual risk window measured in a single network
+  round-trip - judged disproportionate for this pass; noted below as a real, narrower gap.
+
+### Validation
+- Live-verified with a purpose-built Playwright driver (Chromium, installed locally for this
+  session - no project skill or `chromium-cli` was available in this environment) against the
+  actual running stack, not mocks: captured the exact failing request sequence via response/
+  cookie listeners before touching any code, confirmed the fix with the same instrumented
+  script, then re-verified via the full click-through below.
+- Full click-through, screenshotted at each step: sign in/out and self-registration; session
+  survives a hard reload (previously did not); a quotation built with a 50%-over-ceiling
+  discount correctly shows the OVER LIMIT badge, HIGH risk band, and the "why this will be
+  flagged" breakdown; the upsell panel suggests a promoted product with a live margin delta and
+  adding it recomputes the score; Sales Manager approval escalates to Finance/Operations
+  because one line is more than 15 points over its own limit (the single-line gate, independent
+  of the blended score); Finance approval completes the chain to Confirmed; a fulfillment split
+  is accepted and the order moves to Fulfilled; a cancelled hybrid subscription's one-time and
+  recurring lines, credit note, and full proration history all render correctly; the Deal
+  Health dashboard shows real, live-computed stalled/anomaly alerts (including the test
+  quotation's own +28pt discount anomaly); Reports' Export button triggers a genuine `.xlsx`
+  file download; all four admin config screens (Discount Tiers, Product Catalog, Customers,
+  Users) work, including creating a customer and inviting a user; the invited user's email
+  actually arrives in Mailpit, the activation link logs them in as the invited role;
+  Admin can change an existing user's role from that same screen; the customer portal shows the
+  right quotations, submitting a counter-offer moves both the portal and the internal view to
+  "Under Negotiation" in lockstep and re-scores the quote (confirming it is a genuinely live,
+  renegotiable document, not a static snapshot); the Reassign control changes a quotation's
+  owner and the new owner's name is correct immediately, with no stale-relationship regression
+  from the earlier fix; the Register form's native `type="email"` validation blocks a malformed
+  address before any request is even sent.
+- Full 230 pytest suite, `ruff check`, `tsc -b`, and `vite build` all still clean after both
+  fixes.
+
+### Known Issues
+- The cross-tab refresh race is narrowed, not eliminated: two different browser tabs
+  refreshing within the same network round-trip can still trigger reuse detection and log both
+  out. Judged low-probability and not worth a distributed lock for this pass; would need a
+  `BroadcastChannel`/`navigator.locks`-based mutex to close fully.
+- The Playwright driver used for this pass is a scratch script, not a committed test - this
+  project still has no automated browser-level test suite, matching prior entries' "no frontend
+  test runner" note. Worth a real Playwright test suite if this class of bug keeps recurring at
+  the integration boundary between cookie semantics and `document.cookie`, which none of this
+  project's other verification methods (pytest, live-API scripts, `tsc`/`vite build`) can reach.
+
+### Current State
+The cookie-auth migration's central promise - a session that survives exactly the way a real
+browser actually behaves, not just the way a scripted HTTP client behaves - now genuinely holds,
+verified by actually doing the thing (reloading a real browser tab) rather than by reasoning
+about it. Every feature walked in this pass works correctly end-to-end in the real UI.
+
+### Next Recommended Step
+Nothing is blocking. If the cross-tab refresh race or a future frontend-integration bug of this
+shape becomes a recurring pain point, a real Playwright test suite (committed, not scratch) and/
+or a `navigator.locks`-based cross-tab refresh mutex are the two candidates worth building next.

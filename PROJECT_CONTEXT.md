@@ -928,6 +928,11 @@ these optional) and the items below remain.
   `current_cycle_end` forward when a cycle ends, or generates the next `recurring`
   `BillingSchedule` row automatically. Every subscription created by the demo stays on its first
   cycle indefinitely. Same category of gap as backorder consolidation — needs a scheduler
+- **Cross-tab refresh race** — two different browser tabs (sharing the same refresh cookie by
+  design) refreshing within the same network round-trip can still trigger reuse detection and
+  log both out. Narrowed to just this cross-TAB case by the same-tab single-flight guard added
+  in the 2026-09-06 browser-walkthrough fix; closing it fully needs a `navigator.locks` or
+  `BroadcastChannel`-based cross-tab mutex, judged disproportionate for the actual risk window
 - Bonus scope (multi-currency, multi-company) — untouched, correctly
 
 ### Resolved (2026-09-06, part 3) — previously listed here as deferred
@@ -939,7 +944,21 @@ these optional) and the items below remain.
   mint a matching header even if they can plant an unrelated cookie. This also retired the
   entire sessionStorage/localStorage bootstrap-fallback mechanism from 2026-09-05/06 — a cookie
   is already shared correctly across a browser's own tabs, so the "which tab's copy is real"
-  problem that machinery existed to solve no longer exists
+  problem that machinery existed to solve no longer exists.
+  > **Correction, same day, from an actual browser walkthrough.** The version above shipped with
+  > session-resume-on-reload completely broken — the CSRF cookie's `Path=/api/v1/auth` made it
+  > invisible to the frontend's own `document.cookie` (a browser page's `document.cookie` matches
+  > against the CURRENT PAGE's path, not the target of some future request), and separately,
+  > React StrictMode's double-invoked mount effect raced two `/auth/refresh` calls against each
+  > other, triggering reuse-detection's family-wide revocation on every reload. Neither bug was
+  > visible to the live cookie/CSRF verification this entry originally cited — a cookie-jar-aware
+  > HTTP client has no concept of "the page you're currently on" and cannot reproduce either
+  > failure. Both fixed (CSRF cookie `Path=/`; a same-tab single-flight guard around
+  > `refreshAccessToken()`) and re-verified with an actual browser. See
+  > IMPLEMENTATION_LOG.md's "Full Browser Walkthrough" entry for the full story — including why
+  > this is the standing argument for why this project's "verify against the real running
+  > system" standard has to include an actual browser, not just HTTP-level scripts, for anything
+  > touching cookies
 - **`deal.assign`** — done. `GET /quotations/assignable-users` + `PATCH /quotations/{id}/assign`,
   gated by `deal.assign` (Sales Manager, per seed) as a flat permission like `config.manage`/
   `user.manage` elsewhere — not scoped to "your own team," since no other permission in this

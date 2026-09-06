@@ -90,24 +90,53 @@ async function raw(path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`${V1}${path}`, { ...init, headers, credentials: "include" });
 }
 
+/**
+ * In-flight de-dupe: at most one `/auth/refresh` request per tab at a time.
+ *
+ * Refresh rotation revokes the presented token the moment it succeeds
+ * (`services/auth.py::rotate_refresh_token`) — a SECOND, genuinely
+ * concurrent call using that same now-stale cookie is indistinguishable
+ * server-side from an attacker replaying a stolen token, so it gets treated
+ * as reuse and revokes the WHOLE family, killing the session the first
+ * call had just legitimately renewed. Two calls racing like this is not a
+ * hypothetical: React's StrictMode deliberately double-invokes `useEffect`
+ * in development, so `auth.tsx`'s own mount-time resume fired exactly this
+ * race on every reload before this guard existed — caught by actually
+ * driving the app in a browser, not by any script-level HTTP test (nothing
+ * else in this codebase's verification touches two truly concurrent
+ * requests against the same cookie). Every caller within this tab now
+ * awaits the SAME promise instead of starting a second fetch.
+ */
+let pendingRefresh: Promise<boolean> | null = null;
+
 async function refreshAccessToken(): Promise<boolean> {
-  // No body, no stored token to check for — the refresh_token cookie IS the
-  // credential, and the browser attaches it on its own. A brand-new tab with
-  // no session simply gets a 401 here, same as any other unauthenticated
-  // call; there is no separate "do we even have a token to try" question to
-  // ask first anymore.
-  const response = await fetch(`${V1}/auth/refresh`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "X-CSRF-Token": getCsrfToken() ?? "" },
-  });
-  if (!response.ok) {
-    accessToken = null;
-    return false;
+  if (pendingRefresh) return pendingRefresh;
+
+  pendingRefresh = (async () => {
+    // No body, no stored token to check for — the refresh_token cookie IS
+    // the credential, and the browser attaches it on its own. A brand-new
+    // tab with no session simply gets a 401 here, same as any other
+    // unauthenticated call; there is no separate "do we even have a token
+    // to try" question to ask first anymore.
+    const response = await fetch(`${V1}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": getCsrfToken() ?? "" },
+    });
+    if (!response.ok) {
+      accessToken = null;
+      return false;
+    }
+    const data = (await response.json()) as TokenResponse;
+    accessToken = data.access_token;
+    return true;
+  })();
+
+  try {
+    return await pendingRefresh;
+  } finally {
+    pendingRefresh = null;
   }
-  const data = (await response.json()) as TokenResponse;
-  accessToken = data.access_token;
-  return true;
 }
 
 /**

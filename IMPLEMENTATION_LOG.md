@@ -1694,3 +1694,117 @@ create a customer at all**, despite the backend endpoint being open to them.
 ### Current State
 A Sales Rep now has more than one customer to build a quotation against, and the person who
 adds one no longer has to be an Admin or pretend to be inviting a portal user to do it.
+
+## 2026-09-06 — Portal Profile & Messages; Fixed a Real "Can't Pick a Customer" Bug
+
+### Goal
+Two threads from the same conversation. (1) The user asked to "enable Profile and Messages in
+the customer page" — both nav items in the portal shell had been rendered disabled since
+Phase 8, with FRONTEND.md's wireframe naming them but specifying no screen content for either.
+(2) While answering a clarifying question about Messages' scope, the user reported a real,
+separate bug: as a Sales Rep, "I feel there is only for one customer" when creating a
+quotation — asked to find and fix any other genuine bugs of the same shape while at it.
+
+### Implemented
+
+**1. The actual bug (found while investigating the user's report).** `QuotationsList.tsx`'s
+"+ New Quotation" button never asked which customer at all — it silently called
+`POST /quotations` with `customer_id: customers[0].id`, i.e. whichever customer the API
+happened to return first (alphabetically, per `catalog.py`'s `ORDER BY name`). A rep genuinely
+could not choose; the backend has always supported any active `customer_id` in the request; the
+gap was entirely a missing picker in the UI. Fixed by adding a real inline "Which customer is
+this quotation for?" picker (dropdown + Create/Cancel), matching this project's existing inline-
+form pattern (`AdminDiscountTiers.tsx`'s "Add a band"). Handles the zero-customers case
+explicitly (a `NoteBar` pointing at the Customers screen) rather than the previous behavior,
+which would have thrown reaching for `customers[0]` on an empty array.
+
+**The same bug, found a second time in the same sweep.** `Dashboard.tsx` had an independent
+copy of the identical "+ New Quotation" shortcut with the identical `customers[0].id` bug.
+Rather than duplicating the picker UI a second time, the Dashboard button now navigates to
+`/quotations?new=1`; `QuotationsList.tsx` opens its own picker automatically when that query
+param is present (and strips it from the URL immediately after), so there is exactly one
+implementation of "pick a customer for a new quotation," not two that could drift apart.
+
+**Swept the rest of the frontend for the same class of bug** (silently defaulting to `array[0]`
+instead of asking) — every other `[0]` index use in the codebase pre-fills an EDITABLE control
+the user can change before submitting anything (`AdminProductDetail.tsx`'s category dropdown
+default, `QuotationDetail.tsx`'s default subscription plan when adding a line, and
+`FulfillmentDetail.tsx`'s default warehouse on a manual-override row) — a materially different,
+correct pattern from silently submitting an unchangeable choice. None of those needed a fix.
+Noted, but explicitly NOT built this round per "don't deviate from the main thing": `deal.assign`
+("Reassign a quotation to another rep") is a real seeded permission with no endpoint or UI
+anywhere behind it — a missing feature, not a bug, and out of scope for this pass.
+
+**2. Portal Profile.** `GET /portal/profile` (read-only: name, email, company name/code/tier)
+plus a new, deliberately NOT portal-specific `POST /auth/change-password` (any authenticated
+user's own password change — the general primitive belongs in `auth.py`, not `portal.py`,
+since nothing about it is portal business logic). Requires the current password; revokes every
+OTHER refresh token for that user on success (the same "force re-authentication" response
+`rotate_refresh_token`'s reuse detection already applies to a suspected-stolen token) without
+touching the session that just proved the current password.
+
+**3. Portal Messages.** Before this, asked the user to choose between a read-only aggregate
+(reusing existing data) and a real two-way conversation (needs a new backend concept for a rep
+to reply). User chose read-only. `GET /portal/messages`
+(`services/portal.py::customer_message_history`) aggregates the SAME audit-trail
+`PORTAL_COUNTER_OFFER` events `negotiation_history` already reads per-quotation
+(Locked Business Rules #8b), across every quotation the customer has, newest first, each row
+linking back to its quotation. No new data model — same audit trail, wider scope.
+
+Both nav items in `PortalShell.tsx` are now real links instead of disabled placeholders.
+
+### Files Changed
+- `frontend/src/screens/QuotationsList.tsx` (customer picker; `?new=1` auto-open)
+- `frontend/src/screens/Dashboard.tsx` (delegates to the picker instead of duplicating it)
+- `backend/app/services/auth.py` (`PasswordChangeError`, `change_password()`)
+- `backend/app/services/portal.py` (`CustomerMessage`, `customer_message_history()`)
+- `backend/app/api/v1/endpoints/auth.py` (`POST /auth/change-password`)
+- `backend/app/api/v1/endpoints/portal.py` (`GET /portal/profile`, `GET /portal/messages`)
+- `backend/app/schemas/api.py` (`ChangePasswordRequest`, `PortalProfileResponse`,
+  `PortalMessageResponse`)
+- `backend/app/models/audit.py` (`PASSWORD_CHANGED`)
+- `frontend/src/screens/PortalProfile.tsx`, `PortalMessages.tsx` (new)
+- `frontend/src/layouts/PortalShell.tsx` (enabled nav links)
+- `frontend/src/App.tsx`
+- `frontend/src/lib/api.ts` (`PortalProfile`, `PortalMessage` types)
+
+### Important Decisions
+- Decision: `POST /auth/change-password` is a general authenticated-user primitive in `auth.py`,
+  not a portal-only endpoint in `portal.py`.
+- Reason: nothing about changing your own password is portal business logic; scoping it to the
+  portal would mean rebuilding the identical thing again the first time an internal Profile
+  screen is asked for.
+
+- Decision: Messages is read-only and one-directional (the customer's own past requests), per
+  the user's explicit choice between the two options presented.
+- Reason: matches what data actually exists (no rep-reply capability), and was a genuine
+  scope/security-adjacent fork worth asking about rather than assuming, per PLAN.md Section 0.6.
+
+- Decision: fixed the Dashboard's duplicate of the same bug by routing it through the
+  Quotations screen's picker (`?new=1`) rather than building a second inline picker.
+- Reason: two independent implementations of "pick a customer" is exactly how this bug (and its
+  duplicate) got missed the first time; one implementation, two entry points.
+
+### Validation
+- `ruff check` / `ruff format` clean. `tsc -b` and `vite build` both clean.
+- Backend: 230 tests still pass, unchanged (no new pytest tests written this round; the new
+  behavior is covered by the live checks below instead).
+- Live-verified against the running stack: portal profile fetch returns the right
+  name/email/company; wrong current password on change-password returns 401; a correct change
+  returns 204, immediately invalidates the old password (401 on next login) and makes the new
+  one work; changed the test account's password back afterward so the seeded demo credential
+  keeps working. `/portal/profile` and `/portal/messages` both correctly 403 for an internal
+  user (Sales Rep). Messages list for the seeded portal account returned real historical
+  counter-offers with correct quote linkage.
+- The customer-picker fix was verified by re-reading the actual bug (`customers[0].id`) rather
+  than assumed from the user's report, confirming the backend already accepted any valid
+  `customer_id` and the defect was UI-only.
+
+### Current State
+A Sales Rep can create a quotation for any active customer, from either entry point. The
+customer portal's Profile and Messages nav items are real, working screens built from what the
+backend actually has, closing out the last two disabled placeholders from Phase 8.
+
+### Next Recommended Step
+Nothing is blocking. If continuing: `deal.assign` (quotation reassignment) is a seeded
+permission with no implementation behind it — noted this round, not built.

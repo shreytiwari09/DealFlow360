@@ -943,6 +943,9 @@ these optional) and the items below remain.
   cycle indefinitely. Same category of gap as backorder consolidation — needs a scheduler
 - **Restricting public signup** — signup grants an empty internal workspace to anyone. Acceptable
   for a hackathon, wrong for production; belongs in the "what we'd build next" deliverable
+- **`deal.assign`** ("Reassign a quotation to another rep") is a real permission in `app/seed.py`
+  with no endpoint or UI behind it anywhere — found during the 2026-09-06 bug sweep below, not
+  built (out of scope for that pass, not forgotten)
 - Bonus scope (multi-currency, multi-company) — untouched, correctly
 
 ## Do Not Change / Do Not Break

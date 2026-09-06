@@ -747,3 +747,21 @@ export interface InvitationPreview {
   already_accepted: boolean;
   is_expired: boolean;
 }
+
+// --- Customer portal: Profile & Messages (Screen 11) ------------------------
+
+export interface PortalProfile {
+  full_name: string;
+  email: string;
+  customer_name: string;
+  customer_code: string;
+  customer_tier: string;
+}
+
+export interface PortalMessage {
+  created_at: string;
+  author_name: string | null;
+  message: string;
+  quotation_id: number;
+  quote_number: string;
+}

@@ -30,6 +30,8 @@ import InvoicesList from "./screens/InvoicesList";
 import InvoiceDetail from "./screens/InvoiceDetail";
 import PortalQuotationsList from "./screens/PortalQuotationsList";
 import PortalQuotationDetail from "./screens/PortalQuotationDetail";
+import PortalMessages from "./screens/PortalMessages";
+import PortalProfile from "./screens/PortalProfile";
 import DealHealthDashboard from "./screens/DealHealthDashboard";
 import ReportsScreen from "./screens/ReportsScreen";
 import AdminDiscountTiers from "./screens/AdminDiscountTiers";
@@ -87,6 +89,8 @@ export default function App() {
           <Route element={<PortalShell />}>
             <Route path="/portal/quotations" element={<PortalQuotationsList />} />
             <Route path="/portal/quotations/:id" element={<PortalQuotationDetail />} />
+            <Route path="/portal/messages" element={<PortalMessages />} />
+            <Route path="/portal/profile" element={<PortalProfile />} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

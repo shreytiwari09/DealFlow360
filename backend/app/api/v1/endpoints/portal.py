@@ -29,7 +29,9 @@ from app.schemas.api import (
     PortalCommentResponse,
     PortalConfirmResponse,
     PortalLineResponse,
+    PortalMessageResponse,
     PortalNegotiateRequest,
+    PortalProfileResponse,
     PortalQuotationDetailResponse,
     PortalQuotationSummaryResponse,
 )
@@ -38,6 +40,7 @@ from app.services.portal import (
     NEGOTIABLE_STATUSES,
     PortalError,
     confirm_from_portal,
+    customer_message_history,
     load_customer_quotation,
     negotiation_history,
     submit_counter_offer,
@@ -297,3 +300,53 @@ async def confirm(
         re_entered_approval=outcome.re_entered_approval,
         message=message,
     )
+
+
+# --- Profile & Messages ------------------------------------------------------
+#
+# Both nav labels in the wireframe (Screen 11's `My Quotations | Messages |
+# Profile` top bar) had no defined screen behind them; this is that build-out,
+# using only what already exists rather than inventing a new concept for
+# either.
+
+
+@router.get("/profile", response_model=PortalProfileResponse)
+async def get_profile(session: SessionDep, user: PortalViewer) -> PortalProfileResponse:
+    """Read-only account summary. Password changes go through the general
+    `POST /auth/change-password`, not a portal-specific endpoint — there is
+    nothing about changing a password that is actually portal business
+    logic."""
+    if user.customer_id is None or user.customer is None:
+        raise _no_customer(user)
+    return PortalProfileResponse(
+        full_name=user.full_name,
+        email=user.email,
+        customer_name=user.customer.name,
+        customer_code=user.customer.code,
+        customer_tier=user.customer.tier,
+    )
+
+
+@router.get("/messages", response_model=list[PortalMessageResponse])
+async def list_messages(session: SessionDep, user: PortalViewer) -> list[PortalMessageResponse]:
+    """Every comment/counter-offer the customer has sent, across ALL of their
+    quotations, newest first — the aggregate the wireframe's "Messages" nav
+    item implies, built from the same audit-trail data Screen 11's per-quote
+    comment thread already uses (Locked Business Rules #8b), not a new
+    messaging concept. Read-only, and one-directional (the customer's own
+    past requests) because that is the only data that exists today — there is
+    no way yet for a Sales Rep to reply into this thread from the internal
+    side."""
+    if user.customer_id is None:
+        raise _no_customer(user)
+    history = await customer_message_history(session, customer_id=user.customer_id)
+    return [
+        PortalMessageResponse(
+            created_at=item.entry.created_at,
+            author_name=item.entry.user.full_name if item.entry.user else None,
+            message=item.entry.reason or "",
+            quotation_id=item.quotation_id,
+            quote_number=item.quote_number,
+        )
+        for item in history
+    ]

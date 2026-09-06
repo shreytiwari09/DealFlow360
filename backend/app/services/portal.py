@@ -120,6 +120,58 @@ async def negotiation_history(session: AsyncSession, quotation_id: int) -> list[
     return list(result.scalars().all())
 
 
+@dataclass(frozen=True)
+class CustomerMessage:
+    """One row of the portal's "Messages" screen — a past comment, tagged
+    with which quotation it belongs to so the screen can link back to it."""
+
+    quotation_id: int
+    quote_number: str
+    entry: AuditLog
+
+
+async def customer_message_history(
+    session: AsyncSession, *, customer_id: int
+) -> list[CustomerMessage]:
+    """Every counter-offer/comment the customer has ever sent, across ALL of
+    their quotations, newest first — the aggregate view `negotiation_history`
+    deliberately does not provide (that one is scoped to a single quotation).
+
+    Same data source and same restriction as `negotiation_history`: only
+    `PORTAL_COUNTER_OFFER` events, never the internal approval/discount trail.
+    Scoped by `customer_id` in the query itself, not just by which quotation
+    ids happen to get passed in — the same defence-in-depth reasoning as
+    `load_customer_quotation`.
+    """
+    quotations = (
+        await session.execute(
+            select(Quotation.id, Quotation.quote_number).where(Quotation.customer_id == customer_id)
+        )
+    ).all()
+    if not quotations:
+        return []
+    quote_numbers = {str(qid): number for qid, number in quotations}
+
+    result = await session.execute(
+        select(AuditLog)
+        .where(
+            AuditLog.resource == "quotation",
+            AuditLog.resource_id.in_(quote_numbers.keys()),
+            AuditLog.action == AuditAction.PORTAL_COUNTER_OFFER,
+        )
+        .options(selectinload(AuditLog.user))
+        .order_by(AuditLog.created_at.desc())
+    )
+    return [
+        CustomerMessage(
+            quotation_id=int(entry.resource_id),
+            quote_number=quote_numbers[entry.resource_id],
+            entry=entry,
+        )
+        for entry in result.scalars().all()
+    ]
+
+
 async def submit_counter_offer(
     session: AsyncSession,
     quotation: Quotation,

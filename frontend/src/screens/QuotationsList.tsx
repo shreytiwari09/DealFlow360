@@ -8,11 +8,11 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { ApiError, api } from "../lib/api";
 import type { Customer, Quotation, QuotationSummary } from "../lib/api";
 import { dateTime, money } from "../lib/format";
-import { EmptyState, ErrorState, PageHeader, StatusBadge, TableSkeleton } from "../components/ui";
+import { EmptyState, ErrorState, NoteBar, PageHeader, StatusBadge, TableSkeleton } from "../components/ui";
 import { useAuth } from "../lib/auth";
 
 const STAGES = [
@@ -26,10 +26,15 @@ const STAGES = [
 
 export default function QuotationsList() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { can } = useAuth();
   const [rows, setRows] = useState<QuotationSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tableView, setTableView] = useState(false);
+
+  const [customers, setCustomers] = useState<Customer[] | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
@@ -45,32 +50,69 @@ export default function QuotationsList() {
     void load();
   }, [load]);
 
-  async function newQuotation() {
+  // `/quotations?new=1` (from the Dashboard's own "+ New Quotation"
+  // shortcut) opens the same picker below rather than that screen
+  // duplicating this logic — and clears the param so a later reload of this
+  // same URL does not keep re-opening it.
+  useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      void openPicker();
+      setSearchParams((params) => {
+        params.delete("new");
+        return params;
+      });
+    }
+    // Deliberately run once on mount only: this reacts to the URL the user
+    // arrived with, not to `openPicker`/`setSearchParams` identity changes.
+  }, []);
+
+  async function openPicker() {
+    setError(null);
+    setShowPicker(true);
+    if (!customers) {
+      try {
+        const list = await api.get<Customer[]>("/customers");
+        setCustomers(list);
+        // A single customer in the system is still a real choice — it is
+        // just an obvious one — so it is pre-selected, not auto-created.
+        // A brand-new deployment with zero customers is handled below by
+        // leaving the picker on "Choose…" and disabling Create.
+        if (list.length > 0) setSelectedCustomerId(String(list[0].id));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load customers.");
+        setShowPicker(false);
+      }
+    }
+  }
+
+  async function createQuotation() {
+    if (!selectedCustomerId) {
+      setError("Choose which customer this quotation is for.");
+      return;
+    }
     setCreating(true);
+    setError(null);
     try {
-      const customers = await api.get<Customer[]>("/customers");
       const quotation = await api.post<Quotation>("/quotations", {
-        customer_id: customers[0].id,
+        customer_id: Number(selectedCustomerId),
       });
       navigate(`/quotations/${quotation.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create a quotation.");
+      setError(err instanceof ApiError ? err.message : "Could not create a quotation.");
     } finally {
       setCreating(false);
     }
   }
 
+  const newQuotationButton = can("deal.create") && (
+    <button className="btn btn--primary" onClick={() => void openPicker()}>
+      + New Quotation
+    </button>
+  );
+
   const actions = (
     <>
-      {can("deal.create") && (
-        <button
-          className="btn btn--primary"
-          disabled={creating}
-          onClick={() => void newQuotation()}
-        >
-          {creating ? "Creating…" : "+ New Quotation"}
-        </button>
-      )}
+      {newQuotationButton}
       <button className="btn" onClick={() => setTableView((v) => !v)}>
         {tableView ? "Switch to Pipeline" : "Switch to Table View"}
       </button>
@@ -87,15 +129,63 @@ export default function QuotationsList() {
         actions={actions}
       />
 
+      {showPicker && (
+        <div className="card" style={{ marginBottom: "var(--space-4)" }}>
+          <h2 className="card__title">Which customer is this quotation for?</h2>
+          {!customers ? (
+            <p className="muted">Loading customers…</p>
+          ) : customers.length === 0 ? (
+            <NoteBar tone="warning">
+              No customers exist yet. Ask an Admin or Sales Manager to add one on the Customers
+              screen first.
+            </NoteBar>
+          ) : (
+            <div className="row" style={{ gap: "var(--space-3)", alignItems: "flex-end" }}>
+              <div className="field">
+                <label className="field__label">Customer</label>
+                <select
+                  className="select"
+                  value={selectedCustomerId}
+                  onChange={(e) => setSelectedCustomerId(e.target.value)}
+                >
+                  <option value="">Choose…</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                className="btn btn--primary"
+                disabled={creating || !selectedCustomerId}
+                onClick={() => void createQuotation()}
+              >
+                {creating ? "Creating…" : "Create quotation"}
+              </button>
+              <button className="btn" onClick={() => setShowPicker(false)}>
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div style={{ marginBottom: "var(--space-4)" }}>
+          <NoteBar tone="warning">{error}</NoteBar>
+        </div>
+      )}
+
       {!rows && <TableSkeleton rows={5} cols={5} />}
 
-      {rows && rows.length === 0 && (
+      {rows && rows.length === 0 && !showPicker && (
         <EmptyState
           title="No quotations yet"
           hint="Create your first quotation to start managing your pipeline."
           action={
             can("deal.create") ? (
-              <button className="btn btn--primary" onClick={() => void newQuotation()}>
+              <button className="btn btn--primary" onClick={() => void openPicker()}>
                 + New Quotation
               </button>
             ) : undefined

@@ -791,3 +791,32 @@ class InvitationPreviewResponse(BaseModel):
 
 class AcceptInvitationRequest(BaseModel):
     password: str = Field(min_length=8, max_length=200)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+# --- Customer portal: profile & messages (Screen 11's "Profile"/"Messages") -
+
+
+class PortalProfileResponse(BaseModel):
+    """The portal's own read-only account view. Deliberately thinner than
+    `CurrentUserResponse` — no permissions list, no role code, nothing an
+    internal screen would need and a customer has no reason to see."""
+
+    full_name: str
+    email: str
+    customer_name: str
+    customer_code: str
+    customer_tier: str
+
+
+class PortalMessageResponse(PortalCommentResponse):
+    """One row of the portal's "Messages" screen — `PortalCommentResponse`
+    plus which quotation it belongs to, since this view spans every
+    quotation the customer has, not just one."""
+
+    quotation_id: int
+    quote_number: str

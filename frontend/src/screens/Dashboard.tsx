@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import type { Customer, DashboardSummary, Quotation } from "../lib/api";
+import type { DashboardSummary } from "../lib/api";
 import { dateTime, humanise } from "../lib/format";
 import { ErrorState, KpiCard, PageHeader } from "../components/ui";
 import { useAuth } from "../lib/auth";
@@ -13,7 +13,6 @@ export default function Dashboard() {
   const { can } = useAuth();
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -28,23 +27,6 @@ export default function Dashboard() {
     void load();
   }, [load]);
 
-  /** "+ New Quotation" opens a fresh draft in the builder (Screen 4). */
-  async function newQuotation() {
-    setCreating(true);
-    try {
-      const customers = await api.get<Customer[]>("/customers");
-      if (customers.length === 0) throw new Error("No customers are configured.");
-      const quotation = await api.post<Quotation>("/quotations", {
-        customer_id: customers[0].id,
-      });
-      navigate(`/quotations/${quotation.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create a quotation.");
-    } finally {
-      setCreating(false);
-    }
-  }
-
   if (error && !data) return <ErrorState message={error} onRetry={() => void load()} />;
 
   return (
@@ -55,12 +37,8 @@ export default function Dashboard() {
         actions={
           <>
             {can("deal.create") && (
-              <button
-                className="btn btn--primary"
-                disabled={creating}
-                onClick={() => void newQuotation()}
-              >
-                {creating ? "Creating…" : "+ New Quotation"}
+              <button className="btn btn--primary" onClick={() => navigate("/quotations?new=1")}>
+                + New Quotation
               </button>
             )}
             <button className="btn" onClick={() => navigate("/approvals")}>

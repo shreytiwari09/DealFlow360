@@ -8,10 +8,10 @@
  * another internal screen with a different label", and a shared shell with
  * items hidden would be exactly the latter.
  *
- * `Messages` and `Profile` are nav labels in the wireframe with no screen
- * content specified anywhere. FRONTEND.md Section 2.2 says not to invent full
- * screens for them, so they are rendered disabled — the same honest treatment
- * the internal sidebar gives its unbuilt items.
+ * `Messages` and `Profile` were nav labels in the wireframe with no screen
+ * content specified anywhere; both are now real, built from what the backend
+ * actually has rather than an invented spec (`PortalMessages.tsx`,
+ * `PortalProfile.tsx`).
  */
 
 import { NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
@@ -43,12 +43,22 @@ export default function PortalShell() {
           >
             My Quotations
           </NavLink>
-          <span className="portal__link portal__link--disabled" title="Not built yet">
+          <NavLink
+            to="/portal/messages"
+            className={({ isActive }) =>
+              isActive ? "portal__link portal__link--active" : "portal__link"
+            }
+          >
             Messages
-          </span>
-          <span className="portal__link portal__link--disabled" title="Not built yet">
+          </NavLink>
+          <NavLink
+            to="/portal/profile"
+            className={({ isActive }) =>
+              isActive ? "portal__link portal__link--active" : "portal__link"
+            }
+          >
             Profile
-          </span>
+          </NavLink>
         </nav>
         <div className="portal__user">
           <span className="muted">{user.customer_name ?? user.full_name}</span>

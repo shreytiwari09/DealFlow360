@@ -27,6 +27,11 @@ class AuthError(Exception):
     """Authentication failed. Intentionally carries no detail."""
 
 
+class PasswordChangeError(Exception):
+    """Wrong current password, or the account has none yet (a pending
+    invitation) — either way, carries no more detail than that."""
+
+
 class SignupError(Exception):
     """Registration could not proceed. Unlike `AuthError`, this DOES carry a
     detail — a duplicate-email conflict on signup is normal, expected UX
@@ -154,6 +159,31 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> tupl
         user.password_hash = hash_password(password)
 
     return user, await issue_token_pair(session, user)
+
+
+async def change_password(
+    session: AsyncSession, user: User, *, current_password: str, new_password: str
+) -> None:
+    """Any authenticated user's own "Profile" password change — not
+    role-specific, so a customer portal Profile screen and a future internal
+    one can both call the same primitive rather than inventing their own.
+
+    Requires proving the CURRENT password, same as changing an email address
+    or a payment method on any real account — a stolen, still-live access
+    token must not be enough on its own to lock the real owner out. Revokes
+    every other refresh token for this user afterward: a changed password is
+    exactly the moment every OTHER already-open session should be forced to
+    re-authenticate, the same reasoning `rotate_refresh_token`'s reuse
+    detection already applies to a suspected-stolen token. The session that
+    just proved the current password is deliberately not the one being
+    revoked here — its short-lived access token keeps working until it
+    naturally expires, so changing your own password does not immediately
+    log out the tab you changed it from.
+    """
+    if user.password_hash is None or not verify_password(current_password, user.password_hash):
+        raise PasswordChangeError
+    user.password_hash = hash_password(new_password)
+    await _revoke_all_for_user(session, user.id, datetime.now(UTC))
 
 
 async def rotate_refresh_token(session: AsyncSession, token: str) -> tuple[User, TokenPair]:

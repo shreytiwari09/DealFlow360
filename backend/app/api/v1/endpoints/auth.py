@@ -20,6 +20,7 @@ from app.core.rate_limit import limiter
 from app.models.audit import AuditAction
 from app.schemas.api import (
     AcceptInvitationRequest,
+    ChangePasswordRequest,
     CurrentUserResponse,
     InvitationPreviewResponse,
     LoginRequest,
@@ -30,11 +31,13 @@ from app.schemas.api import (
 from app.services import audit
 from app.services.auth import (
     AuthError,
+    PasswordChangeError,
     SignupError,
     authenticate,
     revoke_refresh_token,
     rotate_refresh_token,
 )
+from app.services.auth import change_password as change_password_service
 from app.services.auth import signup as signup_user  # avoids shadowing the endpoint below
 from app.services.invitation import InvitationError, accept_invitation, preview_invitation
 
@@ -172,6 +175,48 @@ async def me(user: CurrentUser) -> CurrentUserResponse:
         customer_id=user.customer_id,
         customer_name=user.customer.name if user.customer else None,
     )
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("5/minute")
+async def change_password(
+    request: Request,
+    response: Response,
+    payload: ChangePasswordRequest,
+    session: SessionDep,
+    user: CurrentUser,
+) -> None:
+    """Any authenticated user's own "Profile" password change — the portal's
+    Profile screen is the first caller, but this is deliberately not portal-
+    specific (see `services/auth.py::change_password`'s docstring).
+
+    Same generic-failure shape as login for a wrong current password: no
+    "your current password is wrong" vs. some other reason distinction that
+    would matter to an attacker holding a stolen access token.
+    """
+    try:
+        await change_password_service(
+            session,
+            user,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+        )
+    except PasswordChangeError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect.",
+        ) from None
+
+    await audit.record(
+        session,
+        action=AuditAction.PASSWORD_CHANGED,
+        user_id=user.id,
+        resource="auth",
+        resource_id=user.id,
+        request=request,
+    )
+    await session.commit()
 
 
 # --- Invitations -------------------------------------------------------------
